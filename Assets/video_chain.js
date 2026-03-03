@@ -74,14 +74,13 @@ class VideoChainManager {
             // Ignore parse errors
         }
 
-        // Check for our metadata - it's in extra_metadata or sui_extra_metadata
-        let extraMeta = metadata.extra_metadata || metadata.sui_extra_metadata || {};
+        // Check for our metadata - it comes back in sui_extra_data
+        let extraMeta = metadata.sui_extra_data || metadata.extra_metadata || metadata.sui_extra_metadata || {};
         let chainId = extraMeta.videochain_id;
         let segmentIndex = extraMeta.videochain_segment;
 
         if (!chainId) {
             // No chain metadata - not a chain video, ignore it
-            // We rely on metadata to correctly route videos to chains
             return;
         }
 
