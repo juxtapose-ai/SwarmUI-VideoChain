@@ -1,6 +1,6 @@
 # VideoChain Extension for SwarmUI
 
-A SwarmUI extension for iterative video generation workflows. Generate multiple candidate videos per segment, compare them side-by-side, select the best, and chain them together into a final video.
+A SwarmUI extension for easily creating chains of videos to make longer outputs. Generate multiple candidate videos per segment, compare them side-by-side, select the best, and chain them together into a final video.
 
 ## Features
 
