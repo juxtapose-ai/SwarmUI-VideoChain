@@ -536,7 +536,26 @@ public class VideoChain : Extension
                     {
                         try
                         {
+                            string directory = Path.GetDirectoryName(fullPath);
+                            string fileNameWithoutExt = Path.GetFileNameWithoutExtension(fullPath);
+
+                            // Delete the main video file
                             Utilities.SendFileToRecycle(fullPath);
+
+                            // Delete all sidecar files (files starting with same name)
+                            // This catches: video.mp4.json, video.txt, video-1.png, etc.
+                            if (directory != null)
+                            {
+                                foreach (string sidecarFile in Directory.GetFiles(directory, $"{fileNameWithoutExt}*"))
+                                {
+                                    if (sidecarFile == fullPath) continue;
+                                    try
+                                    {
+                                        Utilities.SendFileToRecycle(sidecarFile);
+                                    }
+                                    catch { }
+                                }
+                            }
                         }
                         catch (Exception ex)
                         {
