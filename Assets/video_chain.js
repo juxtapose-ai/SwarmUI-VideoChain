@@ -80,16 +80,15 @@ class VideoChainManager {
         let segmentIndex = extraMeta.videochain_segment;
 
         if (!chainId) {
-            // Not a chain video - check if we have any pending generations we should match
-            // This fallback handles cases where metadata isn't properly passed through
-            if (this.pendingGenerations.size > 0) {
-                // Use the first (and typically only) pending generation
-                let [pendingChainId, pending] = [...this.pendingGenerations.entries()][0];
-                chainId = pendingChainId;
-                segmentIndex = pending.segmentIndex;
-            } else {
-                return; // Not a chain video
-            }
+            // No chain metadata - not a chain video, ignore it
+            // We rely on metadata to correctly route videos to chains
+            return;
+        }
+
+        // Verify this chain is actually pending (wasn't deleted)
+        if (!this.pendingGenerations.has(chainId)) {
+            // Chain was deleted or already completed, ignore this result
+            return;
         }
 
         // Normalize the video path
@@ -823,6 +822,9 @@ class VideoChainManager {
     }
 
     deleteChain(chainId, deleteVideos) {
+        // Remove from pending generations immediately to prevent result misrouting
+        this.pendingGenerations.delete(chainId);
+
         genericRequest('DeleteChain', {
             chainId: chainId,
             deleteVideos: deleteVideos
