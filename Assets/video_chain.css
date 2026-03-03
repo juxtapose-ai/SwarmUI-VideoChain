@@ -1,0 +1,713 @@
+/**
+ * Video Chain Extension Styles
+ */
+
+/* Ensure fullscreen viewer appears above our modals */
+#image_fullview_modal {
+    z-index: 10000 !important;
+}
+
+/* Modal base styles - z-index lower than fullscreen viewer */
+.video-chain-modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.7);
+    z-index: 9000;
+    justify-content: center;
+    align-items: center;
+}
+
+.video-chain-modal-content {
+    background-color: var(--background-color, #1a1a2e);
+    border-radius: 8px;
+    padding: 20px;
+    max-width: 90vw;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+    border: 1px solid var(--border-color, #333);
+    position: relative;
+    z-index: 1;
+    pointer-events: auto;
+}
+
+.video-chain-close-x {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: none;
+    border: none;
+    color: var(--text-color, #888);
+    font-size: 24px;
+    cursor: pointer;
+    padding: 0 8px;
+    line-height: 1;
+}
+
+.video-chain-close-x:hover {
+    color: var(--text-color, #fff);
+}
+
+.video-chain-modal-content h2 {
+    margin: 0 0 20px 0;
+    color: var(--text-color, #fff);
+    border-bottom: 1px solid var(--border-color, #333);
+    padding-bottom: 10px;
+}
+
+/* Setup dialog styles */
+.video-chain-setup {
+    min-width: 400px;
+}
+
+.video-chain-form {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    margin-bottom: 20px;
+}
+
+.video-chain-form-row {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.video-chain-form-row label {
+    color: var(--text-color, #fff);
+    font-weight: 500;
+}
+
+.video-chain-form-row input[type="text"],
+.video-chain-form-row input[type="number"] {
+    padding: 8px 12px;
+    border: 1px solid var(--border-color, #444);
+    border-radius: 4px;
+    background-color: var(--input-background, #2a2a3e);
+    color: var(--text-color, #fff);
+    font-size: 14px;
+}
+
+.video-chain-form-row input[type="checkbox"] {
+    margin-right: 8px;
+}
+
+.video-chain-hint {
+    color: var(--text-muted, #888);
+    font-size: 13px;
+    font-style: italic;
+}
+
+.video-chain-hint strong {
+    color: var(--text-color, #ccc);
+}
+
+/* Button styles */
+.video-chain-buttons {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+}
+
+.video-chain-buttons button,
+.video-chain-editor-buttons button {
+    pointer-events: auto;
+    cursor: pointer;
+}
+
+.video-chain-start-btn {
+    background-color: var(--accent-color, #4a90d9) !important;
+}
+
+.video-chain-start-btn:hover {
+    background-color: var(--accent-hover, #5ca0e9) !important;
+}
+
+/* Editor modal styles */
+.video-chain-editor {
+    min-width: 800px;
+    max-width: 1200px;
+}
+
+.video-chain-editor-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.video-chain-editor-header h2 {
+    margin: 0;
+    border: none;
+    padding: 0;
+}
+
+.video-chain-info {
+    color: var(--text-muted, #888);
+    font-size: 14px;
+}
+
+/* Status display */
+.video-chain-status {
+    background-color: var(--accent-color, #4a90d9);
+    color: #fff;
+    padding: 10px 15px;
+    border-radius: 4px;
+    margin-bottom: 15px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.video-chain-status-text {
+    font-weight: 500;
+}
+
+.video-chain-status-count {
+    font-family: monospace;
+    font-size: 14px;
+}
+
+.video-chain-no-candidates,
+.video-chain-no-chains {
+    color: var(--text-muted, #888);
+    text-align: center;
+    padding: 40px 20px;
+}
+
+/* Candidates header */
+.video-chain-candidates-header {
+    color: var(--accent-color, #4a90d9);
+    font-size: 14px;
+    margin-bottom: 10px;
+    padding: 8px 12px;
+    background-color: rgba(74, 144, 217, 0.1);
+    border-radius: 4px;
+    border-left: 3px solid var(--accent-color, #4a90d9);
+}
+
+/* Candidates grid */
+.video-chain-candidates-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 15px;
+    margin-bottom: 20px;
+    max-height: 400px;
+    overflow-y: auto;
+    padding: 10px;
+    background-color: var(--background-secondary, #151528);
+    border-radius: 4px;
+}
+
+.video-chain-candidate-card {
+    background-color: var(--card-background, #2a2a3e);
+    border: 2px solid transparent;
+    border-radius: 8px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color 0.2s, transform 0.2s;
+}
+
+.video-chain-candidate-card:hover {
+    transform: translateY(-2px);
+    border-color: var(--border-hover, #555);
+}
+
+.video-chain-candidate-card.selected {
+    border-color: var(--accent-color, #4a90d9);
+    box-shadow: 0 0 10px rgba(74, 144, 217, 0.3);
+}
+
+.video-chain-candidate-preview {
+    width: 100%;
+    background-color: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    cursor: pointer;
+}
+
+.video-chain-candidate-preview video,
+.video-chain-candidate-preview img {
+    max-width: 100%;
+    max-height: 300px;
+    object-fit: contain;
+}
+
+.video-chain-candidate-controls {
+    padding: 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.video-chain-candidate-label {
+    color: var(--text-color, #fff);
+    font-size: 12px;
+}
+
+.video-chain-select-btn {
+    padding: 4px 12px !important;
+    font-size: 12px !important;
+}
+
+.video-chain-select-btn.selected {
+    background-color: var(--accent-color, #4a90d9) !important;
+}
+
+/* Timeline styles */
+.video-chain-timeline {
+    margin-bottom: 20px;
+    padding: 15px;
+    background-color: var(--background-secondary, #151528);
+    border-radius: 4px;
+}
+
+.video-chain-timeline h3 {
+    margin: 0 0 10px 0;
+    color: var(--text-color, #fff);
+    font-size: 14px;
+}
+
+.video-chain-timeline-segments {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+}
+
+.video-chain-timeline-segment {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background-color: var(--card-background, #2a2a3e);
+    border: 2px solid var(--border-color, #444);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+}
+
+.video-chain-timeline-segment:hover {
+    border-color: var(--border-hover, #666);
+}
+
+.video-chain-timeline-segment.current {
+    border-color: var(--accent-color, #4a90d9);
+    background-color: rgba(74, 144, 217, 0.2);
+}
+
+.video-chain-timeline-segment.has-selection {
+    border-color: var(--success-color, #4caf50);
+}
+
+.video-chain-timeline-segment-number {
+    color: var(--text-color, #fff);
+    font-size: 12px;
+    font-weight: bold;
+}
+
+.video-chain-timeline-check {
+    position: absolute;
+    bottom: -2px;
+    right: -2px;
+    width: 14px;
+    height: 14px;
+    background-color: var(--success-color, #4caf50);
+    border-radius: 50%;
+    color: #fff;
+    font-size: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.video-chain-timeline-arrow {
+    color: var(--text-muted, #666);
+    font-size: 16px;
+    margin: 0 5px;
+}
+
+/* Editor buttons */
+.video-chain-editor-buttons {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.video-chain-continue-btn {
+    background-color: var(--accent-color, #4a90d9) !important;
+}
+
+.video-chain-stitch-btn {
+    background-color: var(--success-color, #4caf50) !important;
+}
+
+.video-chain-cleanup-btn {
+    background-color: var(--warning-color, #ff9800) !important;
+}
+
+/* Chain list dialog - grid layout */
+.video-chain-list-modal {
+    min-width: 700px;
+    max-width: 1000px;
+}
+
+.video-chain-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 15px;
+    max-height: 500px;
+    overflow-y: auto;
+    margin-bottom: 20px;
+    padding: 10px;
+    background-color: var(--background-secondary, #151528);
+    border-radius: 4px;
+}
+
+.video-chain-grid-item {
+    background-color: var(--card-background, #2a2a3e);
+    border-radius: 8px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+    position: relative;
+}
+
+.video-chain-grid-item:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.video-chain-grid-thumb-container {
+    width: 100%;
+    height: 120px;
+    background-color: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+
+.video-chain-grid-thumb {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.video-chain-grid-thumb-placeholder {
+    color: var(--text-muted, #666);
+    font-size: 12px;
+}
+
+.video-chain-grid-item-info {
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.video-chain-grid-name {
+    color: var(--text-color, #fff);
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.video-chain-grid-meta {
+    color: var(--text-muted, #888);
+    font-size: 11px;
+}
+
+.video-chain-grid-date {
+    color: var(--text-muted, #666);
+    font-size: 10px;
+}
+
+.video-chain-grid-status {
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.video-chain-grid-status.status-waiting {
+    color: var(--warning-color, #ff9800);
+}
+
+.video-chain-grid-status.status-ready {
+    color: var(--success-color, #4caf50);
+}
+
+.video-chain-grid-status.status-stitched {
+    color: var(--success-color, #4caf50);
+}
+
+.video-chain-grid-status.status-generating {
+    color: var(--accent-color, #4a90d9);
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+.video-chain-grid-status.status-queued {
+    color: var(--text-muted, #888);
+}
+
+.video-chain-grid-status.status-new {
+    color: var(--text-muted, #666);
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.video-chain-grid-delete-btn {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    background-color: rgba(244, 67, 54, 0.8) !important;
+    color: #fff !important;
+    padding: 2px 8px !important;
+    font-size: 14px !important;
+    line-height: 1 !important;
+    border-radius: 4px !important;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.video-chain-grid-item:hover .video-chain-grid-delete-btn {
+    opacity: 1;
+}
+
+.video-chain-grid-delete-btn:hover {
+    background-color: var(--error-color, #f44336) !important;
+}
+
+/* Pagination */
+.video-chain-pagination {
+    display: flex;
+    justify-content: center;
+    gap: 5px;
+    margin-bottom: 15px;
+}
+
+.video-chain-pagination button {
+    padding: 4px 10px !important;
+    font-size: 12px !important;
+}
+
+/* Menu button styling */
+.video-chain-menu-button {
+    border-top: 1px solid var(--border-color, #333);
+    margin-top: 5px;
+    padding-top: 10px !important;
+}
+
+/* Generating indicator (shown near generate button) */
+.video-chain-generating-indicator {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    margin-top: 10px;
+    background-color: var(--accent-color, #4a90d9);
+    color: #fff;
+    border-radius: 4px;
+    font-size: 13px;
+}
+
+.video-chain-generating-text {
+    flex: 1;
+}
+
+.video-chain-generating-indicator button {
+    padding: 4px 10px !important;
+    font-size: 12px !important;
+    background-color: rgba(255,255,255,0.2) !important;
+}
+
+.video-chain-generating-indicator button:hover {
+    background-color: rgba(255,255,255,0.3) !important;
+}
+
+.video-chain-generating-indicator .video-chain-done-btn {
+    background-color: #fff !important;
+    color: var(--accent-color, #4a90d9) !important;
+    font-weight: 600 !important;
+}
+
+.video-chain-generating-indicator .video-chain-done-btn:hover {
+    background-color: #f0f0f0 !important;
+}
+
+/* Pending generation banner - inline below generate button */
+.video-chain-pending-inline {
+    background: var(--background-light, #2a2a3e);
+    color: var(--text-color, #fff);
+    padding: 10px 12px;
+    margin-top: 8px;
+    border-radius: 6px;
+    border: 1px solid var(--accent-color, #4a90d9);
+    height: fit-content;
+    align-self: flex-start;
+    flex-shrink: 0;
+    flex-grow: 0;
+}
+
+.video-chain-pending-header {
+    font-size: 13px;
+    margin-bottom: 8px;
+}
+
+.video-chain-pending-header strong {
+    color: var(--accent-color, #4a90d9);
+}
+
+.video-chain-pending-buttons {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.video-chain-pending-buttons button {
+    padding: 5px 10px !important;
+    font-size: 12px !important;
+    pointer-events: auto;
+    cursor: pointer;
+}
+
+.video-chain-generate-next-btn {
+    background-color: var(--accent-color, #4a90d9) !important;
+    color: #fff !important;
+    font-weight: 600 !important;
+}
+
+.video-chain-generate-next-btn:hover {
+    filter: brightness(1.1);
+}
+
+/* Fixed position fallback banner (when inline insertion fails) */
+.video-chain-pending-fixed {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: var(--background-light, #2a2a3e);
+    color: var(--text-color, #fff);
+    padding: 12px 16px;
+    border-radius: 8px;
+    border: 2px solid var(--accent-color, #4a90d9);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+    z-index: 8000;
+    max-width: 300px;
+}
+
+.video-chain-pending-fixed .video-chain-pending-header {
+    font-size: 14px;
+    margin-bottom: 10px;
+}
+
+.video-chain-pending-fixed .video-chain-pending-buttons {
+    flex-direction: column;
+}
+
+.video-chain-pending-fixed .video-chain-pending-buttons button {
+    width: 100%;
+    margin-bottom: 5px;
+}
+
+/* Small generating indicator (under generate button) */
+.video-chain-small-indicator {
+    color: var(--text-color, #aaa);
+    padding: 2px 0;
+    font-size: 11px;
+    text-align: center;
+}
+
+/* Queue indicator */
+.video-chain-queue-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 12px;
+    margin-top: 5px;
+    background-color: var(--background-light, #2a2a3e);
+    border: 1px solid var(--border-color, #444);
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--text-muted, #aaa);
+}
+
+.video-chain-queue-indicator button {
+    padding: 2px 8px !important;
+    font-size: 11px !important;
+}
+
+/* Queue dialog list */
+.video-chain-queue-list {
+    max-height: 300px;
+    overflow-y: auto;
+    margin-bottom: 15px;
+}
+
+.video-chain-queue-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    background-color: var(--card-background, #2a2a3e);
+    border-radius: 4px;
+    margin-bottom: 8px;
+}
+
+.video-chain-queue-item span {
+    color: var(--text-color, #fff);
+}
+
+.video-chain-queue-item button {
+    padding: 4px 10px !important;
+    font-size: 12px !important;
+}
+
+/* Start next chain button in editor */
+.video-chain-next-queued-btn {
+    background-color: var(--accent-color, #4a90d9) !important;
+    margin-left: auto;
+}
+
+/* Responsive adjustments */
+@media (max-width: 900px) {
+    .video-chain-editor {
+        min-width: 95vw;
+    }
+
+    .video-chain-candidates-grid {
+        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    }
+}
+
+@media (max-width: 500px) {
+    .video-chain-setup {
+        min-width: 95vw;
+    }
+
+    .video-chain-editor-header {
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .video-chain-editor-buttons {
+        flex-direction: column;
+    }
+
+    .video-chain-editor-buttons button {
+        width: 100%;
+    }
+}
