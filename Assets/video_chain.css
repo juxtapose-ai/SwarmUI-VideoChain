@@ -188,6 +188,29 @@
     background-color: rgba(74, 144, 217, 0.1);
     border-radius: 4px;
     border-left: 3px solid var(--accent-color, #4a90d9);
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.video-chain-init-image {
+    max-width: 120px;
+    max-height: 80px;
+    object-fit: contain;
+    border-radius: 4px;
+    border: 1px solid var(--border-color, #444);
+}
+
+.video-chain-header-text {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.video-chain-init-label {
+    font-size: 11px;
+    color: var(--text-muted, #888);
+    font-weight: normal;
 }
 
 /* Candidates grid */

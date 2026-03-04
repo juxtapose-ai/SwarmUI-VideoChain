@@ -379,9 +379,24 @@ class VideoChainManager {
             return;
         }
 
+        // Build header with init image if available
         let header = document.createElement('div');
         header.className = 'video-chain-candidates-header';
-        header.innerHTML = `<strong>Selecting for Segment ${this.currentSegmentIndex + 1}</strong>`;
+
+        let initImage = currentSegment.init_image;
+        let initImageHtml = '';
+        if (initImage) {
+            let initImageSrc = initImage.startsWith('/') ? initImage : `/${initImage}`;
+            initImageHtml = `<img class="video-chain-init-image" src="${initImageSrc}" alt="Init image" onerror="this.style.display='none'" />`;
+        }
+
+        header.innerHTML = `
+            ${initImageHtml}
+            <div class="video-chain-header-text">
+                <strong>Selecting for Segment ${this.currentSegmentIndex + 1}</strong>
+                ${initImage ? '<span class="video-chain-init-label">Init image used for this segment</span>' : ''}
+            </div>
+        `;
         container.appendChild(header);
 
         let candidates = currentSegment.candidates;
@@ -394,11 +409,13 @@ class VideoChainManager {
             card.dataset.video = candidate;
 
             let videoSrc = candidate.startsWith('/') ? candidate : `/${candidate}`;
+            let lastFramePath = this.getLastFramePath(candidate);
+            let lastFrameSrc = lastFramePath.startsWith('/') ? lastFramePath : `/${lastFramePath}`;
             let escapedCandidate = candidate.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
             card.innerHTML = `
                 <div class="video-chain-candidate-preview">
-                    <video loop muted playsinline>
+                    <video loop muted playsinline poster="${lastFrameSrc}">
                         <source src="${videoSrc}" type="video/mp4">
                     </video>
                 </div>
