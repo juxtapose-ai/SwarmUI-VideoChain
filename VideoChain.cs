@@ -35,7 +35,11 @@ public class VideoChain : Extension
         return Path.Combine(BaseOutputDir, "VideoChains");
     }
 
-    public static PermInfo PermGenerateVideoChains = Permissions.Register(new(
+    /// <summary>Registers a permission, or returns the existing one if already registered (guards against duplicate extension loads).</summary>
+    private static PermInfo RegisterOrGetPerm(PermInfo perm) =>
+        Permissions.Registered.TryGetValue(perm.ID, out PermInfo existing) ? existing : Permissions.Register(perm);
+
+    public static PermInfo PermGenerateVideoChains = RegisterOrGetPerm(new(
         "videochain_generate",
         "[Video Chain] Generate Video Chains",
         "Allows the user to create and generate video chains.",
@@ -43,7 +47,7 @@ public class VideoChain : Extension
         Permissions.GroupUser
     ));
 
-    public static PermInfo PermManageVideoChains = Permissions.Register(new(
+    public static PermInfo PermManageVideoChains = RegisterOrGetPerm(new(
         "videochain_manage",
         "[Video Chain] Manage Video Chains",
         "Allows the user to edit, delete, and stitch video chains.",
