@@ -3,13 +3,25 @@ using SwarmUI.Accounts;
 using SwarmUI.Core;
 using SwarmUI.Utils;
 using SwarmUI.WebAPI;
+using System.Collections.Concurrent;
 using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
 
 namespace SwarmExtensions.VideoChain;
 
 /// <summary>Extension for iterative video chain generation with side-by-side comparison.</summary>
 public class VideoChain : Extension
 {
+    /// <summary>Locks for chain file access to prevent race conditions.</summary>
+    private static readonly ConcurrentDictionary<string, object> ChainLocks = new();
+
+    /// <summary>Watches the output directory for new .swarm.json sidecar files to update chains in real-time.</summary>
+    private FileSystemWatcher _outputWatcher;
+
+    /// <summary>Gets or creates a lock object for a specific chain.</summary>
+    private static object GetChainLock(string chainId) => ChainLocks.GetOrAdd(chainId, _ => new object());
+
     /// <summary>Gets the base output directory (absolute path).</summary>
     public static string BaseOutputDir => Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, Program.ServerSettings.Paths.OutputPath);
 
@@ -58,7 +70,121 @@ public class VideoChain : Extension
         API.RegisterAPICall(StitchChain, true, PermManageVideoChains);
         API.RegisterAPICall(DeleteChain, true, PermManageVideoChains);
         API.RegisterAPICall(AddChainCandidates, true, PermGenerateVideoChains);
-        API.RegisterAPICall(UpdateChainStatus, true, PermGenerateVideoChains);
+        API.RegisterAPICall(PollChainProgress, false, PermGenerateVideoChains);
+
+        StartOutputWatcher();
+    }
+
+    /// <summary>Clean up the file watcher on shutdown.</summary>
+    public override void OnShutdown()
+    {
+        _outputWatcher?.Dispose();
+        _outputWatcher = null;
+    }
+
+    /// <summary>Starts a FileSystemWatcher on the output directory to detect new .swarm.json sidecars.</summary>
+    private void StartOutputWatcher()
+    {
+        string watchDir = BaseOutputDir;
+        if (!Directory.Exists(watchDir))
+        {
+            Logs.Warning("VideoChain: Output directory does not exist, file watcher not started.");
+            return;
+        }
+        _outputWatcher = new FileSystemWatcher(watchDir)
+        {
+            Filter = "*.json",
+            IncludeSubdirectories = true,
+            NotifyFilter = NotifyFilters.FileName,
+            EnableRaisingEvents = true
+        };
+        _outputWatcher.Created += (_, e) =>
+        {
+            if (!e.FullPath.EndsWith(".swarm.json", StringComparison.OrdinalIgnoreCase)) return;
+            // Small delay to ensure WriteAllBytes has fully flushed before we read
+            Task.Delay(300).ContinueWith(_ => ProcessNewSidecar(e.FullPath));
+        };
+        Logs.Debug("VideoChain: Output watcher started.");
+    }
+
+    /// <summary>Extracts the user ID from an output file path based on server settings.</summary>
+    private static string GetUserIdFromPath(string fullPath)
+    {
+        if (!Program.ServerSettings.Paths.AppendUserNameToOutputPath)
+        {
+            return "";
+        }
+        string normalized = fullPath.Replace('\\', '/');
+        string normalizedBase = BaseOutputDir.Replace('\\', '/').TrimEnd('/') + "/";
+        if (!normalized.StartsWith(normalizedBase)) return null;
+        string relative = normalized[normalizedBase.Length..];
+        int slash = relative.IndexOf('/');
+        return slash >= 0 ? relative[..slash] : relative;
+    }
+
+    /// <summary>Processes a newly created .swarm.json sidecar and adds its video to the matching chain if found.</summary>
+    private static void ProcessNewSidecar(string sidecarPath)
+    {
+        try
+        {
+            JObject sidecar = JObject.Parse(File.ReadAllText(sidecarPath));
+            JObject extraData = sidecar["sui_extra_data"] as JObject;
+            if (extraData == null) return;
+            string chainId = extraData["videochain_id"]?.ToString();
+            if (string.IsNullOrEmpty(chainId)) return;
+            int segmentIndex = extraData["videochain_segment"]?.Value<int>() ?? 0;
+
+            string basePath = sidecarPath[..^".swarm.json".Length];
+            string videoPath = null;
+            foreach (string ext in new[] { ".mp4", ".webm", ".mov", ".mpeg" })
+            {
+                if (File.Exists(basePath + ext)) { videoPath = basePath + ext; break; }
+            }
+            if (videoPath == null) return;
+
+            string storedPath = StoredPathFromFilePath(videoPath);
+            if (storedPath == null) return;
+
+            string userId = GetUserIdFromPath(videoPath);
+            if (userId == null) return;
+
+            lock (GetChainLock(chainId))
+            {
+                JObject chain = LoadChain(userId, chainId);
+                if (chain == null) return;
+
+                JArray segments = (JArray)chain["segments"];
+                bool alreadyPresent = segments.Any(s => ((JArray)s["candidates"])?.Any(c => c.ToString() == storedPath) == true);
+                if (alreadyPresent) return;
+
+                while (segments.Count <= segmentIndex)
+                {
+                    segments.Add(new JObject()
+                    {
+                        ["segment_index"] = segments.Count,
+                        ["selected_video"] = null,
+                        ["candidates"] = new JArray(),
+                        ["init_image"] = null,
+                        ["prompt"] = null
+                    });
+                }
+                JObject segment = (JObject)segments[segmentIndex];
+                ((JArray)segment["candidates"]).Add(storedPath);
+
+                if (string.IsNullOrEmpty(segment["prompt"]?.ToString()))
+                {
+                    string prompt = sidecar["prompt"]?.ToString();
+                    if (!string.IsNullOrEmpty(prompt)) segment["prompt"] = prompt;
+                }
+
+                SaveChain(userId, chainId, chain);
+                Logs.Debug($"VideoChain: Added candidate to chain {chainId} segment {segmentIndex} via watcher.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logs.Debug($"VideoChain: Failed to process sidecar {sidecarPath}: {ex.Message}");
+        }
     }
 
     /// <summary>Gets the chain file path for a given chain ID and user.</summary>
@@ -76,10 +202,13 @@ public class VideoChain : Extension
         // So we just need to strip "View/" prefix
         string relativePath = storedPath;
 
-        // Strip leading "View/" if present
         if (relativePath.StartsWith("View/"))
         {
             relativePath = relativePath["View/".Length..];
+        }
+        else if (relativePath.StartsWith("Output/"))
+        {
+            relativePath = relativePath["Output/".Length..];
         }
 
         string outputPath = Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, Program.ServerSettings.Paths.OutputPath);
@@ -133,20 +262,180 @@ public class VideoChain : Extension
         };
     }
 
+    /// <summary>Polls candidate counts for multiple chains in a single request. chainData is a JSON array of {chainId, segmentIndex}.
+    /// The watcher keeps chain JSONs current, so this just reads them directly — no directory scan.</summary>
+    public async Task<JObject> PollChainProgress(Session session, string chainData)
+    {
+        JArray polls;
+        try { polls = JArray.Parse(chainData); }
+        catch { return new JObject() { ["error"] = "Invalid chainData JSON" }; }
+
+        JObject counts = [];
+        foreach (JObject poll in polls)
+        {
+            string chainId = poll["chainId"]?.ToString();
+            int segmentIndex = poll["segmentIndex"]?.Value<int>() ?? 0;
+            if (string.IsNullOrEmpty(chainId)) continue;
+
+            JObject chain = LoadChain(session.User.UserID, chainId);
+            if (chain == null) { counts[chainId] = -1; continue; }
+
+            JArray segments = chain["segments"] as JArray;
+            int count = (segments != null && segments.Count > segmentIndex)
+                ? ((JArray)segments[segmentIndex]?["candidates"])?.Count ?? 0
+                : 0;
+            counts[chainId] = count;
+        }
+
+        return new JObject() { ["success"] = true, ["counts"] = counts };
+    }
+
+    /// <summary>Converts a filesystem path to stored URL format (View/...).</summary>
+    private static string StoredPathFromFilePath(string fullPath)
+    {
+        string normalizedPath = fullPath.Replace('\\', '/');
+        string normalizedBase = BaseOutputDir.Replace('\\', '/').TrimEnd('/');
+        if (normalizedPath.StartsWith(normalizedBase + "/"))
+        {
+            return "View/" + normalizedPath[(normalizedBase.Length + 1)..];
+        }
+        return null;
+    }
+
+    /// <summary>Scans the output directory for .swarm.json sidecars belonging to this chain and adds any missing candidates.</summary>
+    private static bool SyncChainWithOutputFiles(string userId, string chainId, JObject chain)
+    {
+        string scanDir = (Program.ServerSettings.Paths.AppendUserNameToOutputPath && !string.IsNullOrEmpty(userId))
+            ? Path.Combine(BaseOutputDir, userId)
+            : BaseOutputDir;
+        if (!Directory.Exists(scanDir))
+        {
+            return false;
+        }
+
+        // Use chain creation date to skip old files (with buffer for clock skew)
+        DateTime minFileTime = DateTime.MinValue;
+        if (DateTime.TryParse(chain["created"]?.ToString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out DateTime chainCreated))
+        {
+            minFileTime = chainCreated.AddMinutes(-5).ToUniversalTime();
+        }
+
+        JArray segments = (JArray)chain["segments"];
+
+        // Build set of already-known candidates for dedup
+        HashSet<string> knownCandidates = [];
+        foreach (JObject seg in segments)
+        {
+            foreach (JToken c in (JArray)seg["candidates"])
+            {
+                knownCandidates.Add(c.ToString());
+            }
+        }
+
+        string[] videoExtensions = [".mp4", ".webm", ".mov", ".mpeg"];
+        bool modified = false;
+
+        try
+        {
+            foreach (string sidecarFile in Directory.EnumerateFiles(scanDir, "*.json", SearchOption.AllDirectories).Where(f => f.EndsWith(".swarm.json", StringComparison.OrdinalIgnoreCase)))
+            {
+                if (minFileTime != DateTime.MinValue && File.GetLastWriteTimeUtc(sidecarFile) < minFileTime)
+                {
+                    continue;
+                }
+                try
+                {
+                    JObject sidecar = JObject.Parse(File.ReadAllText(sidecarFile));
+                    JObject extraData = sidecar["sui_extra_data"] as JObject;
+                    if (extraData == null) continue;
+                    if (extraData["videochain_id"]?.ToString() != chainId) continue;
+
+                    int segmentIndex = extraData["videochain_segment"]?.Value<int>() ?? 0;
+
+                    // Strip ".swarm.json" to get the base path, then find the video file
+                    string basePath = sidecarFile[..^".swarm.json".Length];
+                    string videoPath = null;
+                    foreach (string ext in videoExtensions)
+                    {
+                        if (File.Exists(basePath + ext))
+                        {
+                            videoPath = basePath + ext;
+                            break;
+                        }
+                    }
+                    if (videoPath == null) continue;
+
+                    string storedPath = StoredPathFromFilePath(videoPath);
+                    if (storedPath == null || knownCandidates.Contains(storedPath)) continue;
+
+                    // Expand segments array if needed
+                    while (segments.Count <= segmentIndex)
+                    {
+                        segments.Add(new JObject()
+                        {
+                            ["segment_index"] = segments.Count,
+                            ["selected_video"] = null,
+                            ["candidates"] = new JArray(),
+                            ["init_image"] = null,
+                            ["prompt"] = null
+                        });
+                    }
+
+                    JObject segment = (JObject)segments[segmentIndex];
+                    ((JArray)segment["candidates"]).Add(storedPath);
+                    knownCandidates.Add(storedPath);
+
+                    // Pull prompt from sidecar if not already set
+                    if (string.IsNullOrEmpty(segment["prompt"]?.ToString()))
+                    {
+                        string prompt = sidecar["prompt"]?.ToString();
+                        if (!string.IsNullOrEmpty(prompt))
+                        {
+                            segment["prompt"] = prompt;
+                        }
+                    }
+
+                    modified = true;
+                }
+                catch (Exception ex)
+                {
+                    Logs.Debug($"VideoChain: Failed to read sidecar {sidecarFile}: {ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logs.Warning($"VideoChain: Failed to scan output directory for chain {chainId}: {ex.Message}");
+        }
+
+        return modified;
+    }
+
     /// <summary>Gets a video chain by ID.</summary>
     public async Task<JObject> GetVideoChain(Session session, string chainId)
     {
-        // Try user's own chains first, then check if admin accessing another user's chain
         JObject chain = LoadChain(session.User.UserID, chainId);
-        if (chain == null && session.User.HasPermission(Permissions.ManageUsers))
-        {
-            // Admin might be accessing another user's chain - scan all user directories
-            // For now, just return not found - admins can use the list view
-            return new JObject() { ["error"] = "Chain not found" };
-        }
         if (chain == null)
         {
             return new JObject() { ["error"] = "Chain not found" };
+        }
+
+        // Fallback scan: if the chain has no candidates at all (e.g., watcher missed events due to
+        // a server restart, or chains generated before the watcher was introduced), do a one-time
+        // directory scan to recover. The watcher handles ongoing updates in real-time.
+        JArray segs = chain["segments"] as JArray;
+        bool hasCandidates = segs != null && segs.Any(s => ((JArray)s["candidates"])?.Count > 0);
+        if (!hasCandidates)
+        {
+            lock (GetChainLock(chainId))
+            {
+                chain = LoadChain(session.User.UserID, chainId);
+                if (chain == null) return new JObject() { ["error"] = "Chain not found" };
+                if (SyncChainWithOutputFiles(session.User.UserID, chainId, chain))
+                {
+                    SaveChain(session.User.UserID, chainId, chain);
+                }
+            }
         }
 
         return new JObject()
@@ -219,184 +508,175 @@ public class VideoChain : Extension
         };
     }
 
-    /// <summary>Updates a chain's status.</summary>
-    public async Task<JObject> UpdateChainStatus(Session session, string chainId, string status)
-    {
-        JObject chain = LoadChain(session.User.UserID, chainId);
-        if (chain == null)
-        {
-            return new JObject() { ["error"] = "Chain not found" };
-        }
-
-        chain["status"] = status;
-        SaveChain(session.User.UserID, chainId, chain);
-
-        return new JObject()
-        {
-            ["success"] = true,
-            ["chain"] = chain
-        };
-    }
-
-    /// <summary>Adds candidates to a chain segment.</summary>
+/// <summary>Adds candidates to a chain segment.</summary>
     public async Task<JObject> AddChainCandidates(Session session, string chainId, int segmentIndex, string[] candidates, string initImage = null, string prompt = null)
     {
-        JObject chain = LoadChain(session.User.UserID, chainId);
-        if (chain == null)
+        // Lock to prevent race conditions when multiple batches finish close together
+        lock (GetChainLock(chainId))
         {
-            return new JObject() { ["error"] = "Chain not found" };
-        }
-
-        JArray segments = (JArray)chain["segments"];
-
-        // Expand segments array if needed
-        while (segments.Count <= segmentIndex)
-        {
-            segments.Add(new JObject()
+            JObject chain = LoadChain(session.User.UserID, chainId);
+            if (chain == null)
             {
-                ["segment_index"] = segments.Count,
-                ["selected_video"] = null,
-                ["candidates"] = new JArray(),
-                ["init_image"] = null,
-                ["prompt"] = null
-            });
+                return new JObject() { ["error"] = "Chain not found" };
+            }
+
+            JArray segments = (JArray)chain["segments"];
+
+            // Expand segments array if needed
+            while (segments.Count <= segmentIndex)
+            {
+                segments.Add(new JObject()
+                {
+                    ["segment_index"] = segments.Count,
+                    ["selected_video"] = null,
+                    ["candidates"] = new JArray(),
+                    ["init_image"] = null,
+                    ["prompt"] = null
+                });
+            }
+
+            JObject segment = (JObject)segments[segmentIndex];
+            JArray existingCandidates = (JArray)segment["candidates"];
+
+            foreach (string candidate in candidates)
+            {
+                existingCandidates.Add(candidate);
+            }
+
+            if (initImage != null)
+            {
+                segment["init_image"] = initImage;
+            }
+            if (prompt != null)
+            {
+                segment["prompt"] = prompt;
+            }
+
+            SaveChain(session.User.UserID, chainId, chain);
+
+            return new JObject()
+            {
+                ["success"] = true,
+                ["chain"] = chain
+            };
         }
-
-        JObject segment = (JObject)segments[segmentIndex];
-        JArray existingCandidates = (JArray)segment["candidates"];
-
-        foreach (string candidate in candidates)
-        {
-            existingCandidates.Add(candidate);
-        }
-
-        if (initImage != null)
-        {
-            segment["init_image"] = initImage;
-        }
-        if (prompt != null)
-        {
-            segment["prompt"] = prompt;
-        }
-
-        SaveChain(session.User.UserID, chainId, chain);
-
-        return new JObject()
-        {
-            ["success"] = true,
-            ["chain"] = chain
-        };
     }
 
     /// <summary>Updates a chain segment with selection.</summary>
     public async Task<JObject> UpdateChainSegment(Session session, string chainId, int segmentIndex, string selectedVideo)
     {
-        JObject chain = LoadChain(session.User.UserID, chainId);
-        if (chain == null)
+        lock (GetChainLock(chainId))
         {
-            return new JObject() { ["error"] = "Chain not found" };
+            JObject chain = LoadChain(session.User.UserID, chainId);
+            if (chain == null)
+            {
+                return new JObject() { ["error"] = "Chain not found" };
+            }
+
+            JArray segments = (JArray)chain["segments"];
+            if (segmentIndex >= segments.Count)
+            {
+                return new JObject() { ["error"] = "Segment not found" };
+            }
+
+            JObject segment = (JObject)segments[segmentIndex];
+            segment["selected_video"] = selectedVideo;
+
+            SaveChain(session.User.UserID, chainId, chain);
+
+            return new JObject()
+            {
+                ["success"] = true,
+                ["chain"] = chain
+            };
         }
-
-        JArray segments = (JArray)chain["segments"];
-        if (segmentIndex >= segments.Count)
-        {
-            return new JObject() { ["error"] = "Segment not found" };
-        }
-
-        JObject segment = (JObject)segments[segmentIndex];
-        segment["selected_video"] = selectedVideo;
-
-        SaveChain(session.User.UserID, chainId, chain);
-
-        return new JObject()
-        {
-            ["success"] = true,
-            ["chain"] = chain
-        };
     }
 
     /// <summary>Deletes non-selected candidates from a segment.</summary>
     public async Task<JObject> DeleteChainCandidates(Session session, string chainId, int segmentIndex)
     {
-        JObject chain = LoadChain(session.User.UserID, chainId);
-        if (chain == null)
+        lock (GetChainLock(chainId))
         {
-            return new JObject() { ["error"] = "Chain not found" };
-        }
-
-        JArray segments = (JArray)chain["segments"];
-        if (segmentIndex >= segments.Count)
-        {
-            return new JObject() { ["error"] = "Segment not found" };
-        }
-
-        JObject segment = (JObject)segments[segmentIndex];
-        string selectedVideo = segment["selected_video"]?.ToString();
-
-        if (string.IsNullOrEmpty(selectedVideo))
-        {
-            return new JObject() { ["error"] = "No video selected yet" };
-        }
-
-        JArray candidates = (JArray)segment["candidates"];
-        List<string> deleted = [];
-
-        foreach (JToken candidate in candidates.ToList())
-        {
-            string candidatePath = candidate.ToString();
-            if (candidatePath != selectedVideo)
+            JObject chain = LoadChain(session.User.UserID, chainId);
+            if (chain == null)
             {
-                // Try to delete the video file and all related sidecar files
-                string fullPath = GetFullPathFromStoredPath(candidatePath);
-                if (File.Exists(fullPath))
+                return new JObject() { ["error"] = "Chain not found" };
+            }
+
+            JArray segments = (JArray)chain["segments"];
+            if (segmentIndex >= segments.Count)
+            {
+                return new JObject() { ["error"] = "Segment not found" };
+            }
+
+            JObject segment = (JObject)segments[segmentIndex];
+            string selectedVideo = segment["selected_video"]?.ToString();
+
+            if (string.IsNullOrEmpty(selectedVideo))
+            {
+                return new JObject() { ["error"] = "No video selected yet" };
+            }
+
+            JArray candidates = (JArray)segment["candidates"];
+            List<string> deleted = [];
+
+            foreach (JToken candidate in candidates.ToList())
+            {
+                string candidatePath = candidate.ToString();
+                if (candidatePath != selectedVideo)
                 {
-                    try
+                    // Try to delete the video file and all related sidecar files
+                    string fullPath = GetFullPathFromStoredPath(candidatePath);
+                    if (File.Exists(fullPath))
                     {
-                        string directory = Path.GetDirectoryName(fullPath);
-                        string fileNameWithoutExt = Path.GetFileNameWithoutExtension(fullPath);
-
-                        // Delete the main video file
-                        Utilities.SendFileToRecycle(fullPath);
-                        deleted.Add(candidatePath);
-
-                        // Delete all sidecar files (files starting with same name)
-                        // This catches: video.mp4.json, video.txt, video-1.png, etc.
-                        if (directory != null)
+                        try
                         {
-                            foreach (string sidecarFile in Directory.GetFiles(directory, $"{fileNameWithoutExt}*"))
-                            {
-                                // Skip if it's the main file we already deleted
-                                if (sidecarFile == fullPath) continue;
+                            string directory = Path.GetDirectoryName(fullPath);
+                            string fileNameWithoutExt = Path.GetFileNameWithoutExtension(fullPath);
 
-                                try
+                            // Delete the main video file
+                            Utilities.SendFileToRecycle(fullPath);
+                            deleted.Add(candidatePath);
+
+                            // Delete all sidecar files (files starting with same name)
+                            // This catches: video.mp4.json, video.txt, video-1.png, etc.
+                            if (directory != null)
+                            {
+                                foreach (string sidecarFile in Directory.GetFiles(directory, $"{fileNameWithoutExt}*"))
                                 {
-                                    Utilities.SendFileToRecycle(sidecarFile);
-                                }
-                                catch (Exception ex)
-                                {
-                                    Logs.Warning($"Failed to delete sidecar file {sidecarFile}: {ex.Message}");
+                                    // Skip if it's the main file we already deleted
+                                    if (sidecarFile == fullPath) continue;
+
+                                    try
+                                    {
+                                        Utilities.SendFileToRecycle(sidecarFile);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Logs.Warning($"Failed to delete sidecar file {sidecarFile}: {ex.Message}");
+                                    }
                                 }
                             }
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        Logs.Warning($"Failed to delete candidate {candidatePath}: {ex.Message}");
+                        catch (Exception ex)
+                        {
+                            Logs.Warning($"Failed to delete candidate {candidatePath}: {ex.Message}");
+                        }
                     }
                 }
             }
+
+            // Update candidates list to only include selected
+            segment["candidates"] = new JArray { selectedVideo };
+            SaveChain(session.User.UserID, chainId, chain);
+
+            return new JObject()
+            {
+                ["success"] = true,
+                ["deleted"] = JArray.FromObject(deleted),
+                ["chain"] = chain
+            };
         }
-
-        // Update candidates list to only include selected
-        segment["candidates"] = new JArray { selectedVideo };
-        SaveChain(session.User.UserID, chainId, chain);
-
-        return new JObject()
-        {
-            ["success"] = true,
-            ["deleted"] = JArray.FromObject(deleted),
-            ["chain"] = chain
-        };
     }
 
     /// <summary>Stitches all selected segments into a final video using FFmpeg.</summary>
@@ -428,18 +708,22 @@ public class VideoChain : Extension
                 {
                     selectedVideos.Add(fullPath);
 
-                    // Try to get the parsed prompt from the sidecar JSON
-                    string sidecarPath = fullPath + ".json";
+                    // Get prompt: segment["prompt"] is already the parsed prompt (set by the watcher).
+                    // Fall back to the .swarm.json sidecar if the segment prompt is missing.
                     string prompt = segment["prompt"]?.ToString() ?? "";
-                    if (File.Exists(sidecarPath))
+                    if (string.IsNullOrEmpty(prompt))
                     {
-                        try
+                        string videoExt = Path.GetExtension(fullPath);
+                        string sidecarPath = fullPath[..^videoExt.Length] + ".swarm.json";
+                        if (File.Exists(sidecarPath))
                         {
-                            JObject sidecar = JObject.Parse(File.ReadAllText(sidecarPath));
-                            // Use parsed prompt from sidecar if available (after wildcards/randoms resolved)
-                            prompt = sidecar["prompt"]?.ToString() ?? prompt;
+                            try
+                            {
+                                JObject sidecar = JObject.Parse(File.ReadAllText(sidecarPath));
+                                prompt = sidecar["prompt"]?.ToString() ?? "";
+                            }
+                            catch { }
                         }
-                        catch { }
                     }
                     promptChain.Add(prompt);
                 }
@@ -485,11 +769,10 @@ public class VideoChain : Extension
 
             // Update chain status
             chain["status"] = "stitched";
-            // Store relative path for serving via View endpoint
-            // View endpoint expects: View/{user}/{path} where path is relative to Output/{user}/
-            // Output file is at: Output/{user}/raw/VideoChains/file.mp4
-            // So relativePath should be: raw/VideoChains/file.mp4
-            string userOutputDir = Path.Combine(BaseOutputDir, session.User.UserID).Replace("\\", "/");
+            // Store path relative to the user's output base directory, matching GetUserVideoChainDir logic
+            string userOutputDir = (Program.ServerSettings.Paths.AppendUserNameToOutputPath && !string.IsNullOrEmpty(session.User.UserID))
+                ? Path.Combine(BaseOutputDir, session.User.UserID).Replace("\\", "/")
+                : BaseOutputDir.Replace("\\", "/");
             string relativePath = outputPath.Replace("\\", "/");
             if (relativePath.StartsWith(userOutputDir))
             {

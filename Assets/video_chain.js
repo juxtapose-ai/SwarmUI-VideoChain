@@ -11,8 +11,9 @@ class VideoChainManager {
         this.activeChain = null;
         this.currentSegmentIndex = 0;
 
-        // Track in-flight generations: chainId -> { segmentIndex, expectedCount, receivedCount }
-        this.pendingGenerations = new Map();
+        // Track in-flight generation polls: chainId -> { segmentIndex, expectedCount, chainName, lastCount, stalePolls }
+        this.activePolls = new Map();
+        this.managerInterval = null;
 
         // UI elements
         this.setupDialog = null;
@@ -21,155 +22,11 @@ class VideoChainManager {
 
     /** Initialize the extension */
     init() {
+        if (this._initialized) return;
+        this._initialized = true;
         this.injectMenuOptions();
         this.createSetupDialog();
         this.createEditorModal();
-        this.hookResultCapture();
-        console.log('VideoChain v2 initialized');
-    }
-
-    /** Hook into result capture to intercept chain videos */
-    hookResultCapture() {
-        let self = this;
-
-        // Hook gotImageResult - this is called for all generation results
-        let waitForGotImageResult = setInterval(() => {
-            if (typeof gotImageResult === 'undefined') return;
-            clearInterval(waitForGotImageResult);
-
-            let originalGotImageResult = gotImageResult;
-            window.gotImageResult = function(image, metadata, batchId) {
-                // Check if this is a video
-                let isVideo = (typeof isVideoExt === 'function')
-                    ? isVideoExt(image)
-                    : /\.(mp4|webm|mov|mpeg)$/i.test(image);
-
-                // Also check if this is a video's last frame (saved by FrameSaver: video-1.png)
-                // If so, derive the video path from it
-                let isLastFrame = /-1\.(png|jpg|jpeg)$/i.test(image);
-
-                if (isVideo) {
-                    self.handleVideoResult(image, metadata);
-                } else if (isLastFrame && self.pendingGenerations.size > 0) {
-                    // Derive video path: remove "-1.png" suffix, add ".mp4"
-                    let videoPath = image.replace(/-1\.(png|jpg|jpeg)$/i, '.mp4');
-                    self.handleVideoResult(videoPath, metadata);
-                }
-
-                return originalGotImageResult(image, metadata, batchId);
-            };
-        }, 500);
-    }
-
-    /** Handle a video result - check for chain metadata */
-    handleVideoResult(videoPath, metadataStr) {
-        let metadata = {};
-        try {
-            if (typeof metadataStr === 'string') {
-                metadata = JSON.parse(metadataStr);
-            } else if (typeof metadataStr === 'object') {
-                metadata = metadataStr;
-            }
-        } catch (e) {
-            // Ignore parse errors
-        }
-
-        // Check for our metadata - it comes back in sui_extra_data
-        let extraMeta = metadata.sui_extra_data || metadata.extra_metadata || metadata.sui_extra_metadata || {};
-        let chainId = extraMeta.videochain_id;
-        let segmentIndex = extraMeta.videochain_segment;
-
-        if (!chainId) {
-            // No chain metadata - not a chain video, ignore it
-            return;
-        }
-
-        // Verify this chain is actually pending (wasn't deleted)
-        if (!this.pendingGenerations.has(chainId)) {
-            // Chain was deleted or already completed, ignore this result
-            return;
-        }
-
-        // Normalize the video path
-        let normalizedPath = this.normalizeVideoPath(videoPath);
-
-        // Add to the chain
-        this.addCandidateToChain(chainId, segmentIndex, normalizedPath, metadata);
-    }
-
-    /** Normalize video path for storage */
-    normalizeVideoPath(videoPath) {
-        let path = videoPath;
-
-        // Handle full URLs
-        try {
-            let url = new URL(path, window.location.origin);
-            path = url.pathname;
-        } catch (e) {}
-
-        // Remove leading slash
-        if (path.startsWith('/')) {
-            path = path.substring(1);
-        }
-
-        // Decode URL encoding
-        try {
-            path = decodeURIComponent(path);
-        } catch (e) {}
-
-        return path;
-    }
-
-    /** Add a candidate video to a chain segment */
-    addCandidateToChain(chainId, segmentIndex, videoPath, metadata) {
-        let pending = this.pendingGenerations.get(chainId);
-        if (!pending) {
-            pending = { segmentIndex: segmentIndex, expectedCount: 1, receivedCount: 0, candidates: [] };
-            this.pendingGenerations.set(chainId, pending);
-        }
-
-        // Avoid duplicates
-        if (pending.candidates.includes(videoPath)) {
-            return;
-        }
-
-        pending.candidates.push(videoPath);
-        pending.receivedCount++;
-
-        // Check if we have all expected candidates
-        if (pending.receivedCount >= pending.expectedCount) {
-            this.finalizeSegmentGeneration(chainId, pending);
-        }
-    }
-
-    /** Finalize a segment generation - save candidates to backend */
-    finalizeSegmentGeneration(chainId, pending) {
-
-        let prompt = document.getElementById('alt_prompt_textbox')?.value ||
-                     document.getElementById('input_prompt')?.value || '';
-
-        genericRequest('AddChainCandidates', {
-            chainId: chainId,
-            segmentIndex: pending.segmentIndex,
-            candidates: pending.candidates,
-            prompt: prompt
-        }, (data) => {
-            // Remove from pending
-            this.pendingGenerations.delete(chainId);
-
-            if (data.error) {
-                showError(data.error);
-                return;
-            }
-
-            let chainName = data.chain?.name || 'Chain';
-            doNoticePopover(`"${chainName}" segment ${pending.segmentIndex + 1}: ${pending.candidates.length} candidates saved`, 'notice-pop-green');
-
-            // Update active chain if it's the one we just generated for
-            if (this.activeChain && this.activeChain.chain_id == chainId) {
-                this.activeChain = data.chain;
-            }
-        });
     }
 
     /** Inject menu options into the generate popover */
@@ -304,31 +161,96 @@ class VideoChainManager {
             this.currentSegmentIndex = 0;
 
             // Generate with chain metadata
-            this.generateForChain(chain.chain_id, 0, candidatesPerSegment);
+            this.generateForChain(chain.chain_id, 0, candidatesPerSegment, chain.name);
         });
     }
 
     /** Generate candidates for a chain segment with metadata injection */
-    generateForChain(chainId, segmentIndex, expectedCount) {
-        // Ensure Save Last Frame is enabled
+    generateForChain(chainId, segmentIndex, expectedCount, chainName) {
         this.ensureSaveLastFrameEnabled();
 
-        // Register pending generation
-        this.pendingGenerations.set(chainId, {
-            segmentIndex: segmentIndex,
-            expectedCount: expectedCount,
-            receivedCount: 0,
-            candidates: []
-        });
-
-        // Use postCollectRun callback to inject our metadata
         mainGenHandler.doGenerate({}, {}, (actualInput) => {
             actualInput.extra_metadata = actualInput.extra_metadata || {};
             actualInput.extra_metadata.videochain_id = chainId;
             actualInput.extra_metadata.videochain_segment = segmentIndex;
         });
 
+        this.startChainPolling(chainId, segmentIndex, expectedCount, chainName || chainId);
         doNoticePopover(`Generating segment ${segmentIndex + 1} for chain...`, 'notice-pop-blue');
+    }
+
+    /** Begin tracking a chain segment for polling. Starts the shared manager interval if not already running. */
+    startChainPolling(chainId, segmentIndex, expectedCount, chainName) {
+        this.activePolls.set(chainId, {
+            segmentIndex: segmentIndex,
+            expectedCount: expectedCount,
+            chainName: chainName,
+            lastCount: 0,
+            stalePolls: 0
+        });
+        if (!this.managerInterval) {
+            this.managerInterval = setInterval(() => this._pollTick(), 3000);
+        }
+    }
+
+    /** Stop tracking a chain. Stops the shared interval when no chains remain. */
+    stopChainPolling(chainId) {
+        this.activePolls.delete(chainId);
+        if (this.activePolls.size == 0 && this.managerInterval) {
+            clearInterval(this.managerInterval);
+            this.managerInterval = null;
+        }
+    }
+
+    /** Single shared poll tick — one request for all active chains. */
+    _pollTick() {
+        if (this.activePolls.size == 0) {
+            clearInterval(this.managerInterval);
+            this.managerInterval = null;
+            return;
+        }
+        let pollData = [];
+        for (let [chainId, poll] of this.activePolls) {
+            pollData.push({ chainId: chainId, segmentIndex: poll.segmentIndex });
+        }
+        genericRequest('PollChainProgress', { chainData: JSON.stringify(pollData) }, (data) => {
+            if (!data.counts) return;
+            let maxStalePolls = 600; // 30 min at 3s with no new candidates
+            for (let [chainId, poll] of [...this.activePolls]) {
+                let candidateCount = data.counts[chainId];
+                if (candidateCount === undefined) continue;
+                if (candidateCount == -1) {
+                    // Chain was deleted
+                    this.stopChainPolling(chainId);
+                    continue;
+                }
+                if (candidateCount > poll.lastCount) {
+                    poll.lastCount = candidateCount;
+                    poll.stalePolls = 0;
+                    // If editor is showing this chain, refresh it
+                    if (this.activeChain?.chain_id == chainId && this.editorModal.style.display != 'none') {
+                        genericRequest('GetVideoChain', { chainId: chainId }, (d) => {
+                            if (d.chain && this.activeChain?.chain_id == chainId) {
+                                this.activeChain = d.chain;
+                                this.renderCandidates();
+                                this.renderTimeline();
+                            }
+                        });
+                    }
+                } else {
+                    poll.stalePolls++;
+                }
+                if (candidateCount >= poll.expectedCount) {
+                    this.stopChainPolling(chainId);
+                    doNoticePopover(`"${poll.chainName}" segment ${poll.segmentIndex + 1}: ${candidateCount} candidates ready`, 'notice-pop-green');
+                } else if (poll.stalePolls >= maxStalePolls) {
+                    this.stopChainPolling(chainId);
+                    if (candidateCount > 0) {
+                        doNoticePopover(`"${poll.chainName}" segment ${poll.segmentIndex + 1}: ${candidateCount} of ${poll.expectedCount} candidates ready`, 'notice-pop-yellow');
+                    }
+                }
+            }
+        });
     }
 
     /** Ensure Save Last Frame is enabled for chaining */
@@ -589,7 +511,10 @@ class VideoChainManager {
             return;
         }
 
-        this.generateForChain(this.continuingChainId, this.continuingSegmentIndex, this.continuingExpectedCount);
+        // Read expected count NOW (at generation time) so user can adjust Images after clicking Continue
+        let expectedCount = parseInt(document.getElementById('input_images')?.value) || 1;
+
+        this.generateForChain(this.continuingChainId, this.continuingSegmentIndex, expectedCount, this.activeChain?.name);
 
         // Clear continuation state
         this.continuingChainId = null;
@@ -775,7 +700,7 @@ class VideoChainManager {
                     // Determine status display
                     let displayStatus = '';
                     let statusClass = '';
-                    let isGenerating = this.pendingGenerations.has(chain.chain_id);
+                    let isGenerating = this.activePolls.has(chain.chain_id);
 
                     if (chain.status == 'stitched' || chain.status == 'completed') {
                         displayStatus = 'Stitched';
@@ -838,8 +763,7 @@ class VideoChainManager {
     }
 
     deleteChain(chainId, deleteVideos) {
-        // Remove from pending generations immediately to prevent result misrouting
-        this.pendingGenerations.delete(chainId);
+        this.stopChainPolling(chainId);
 
         genericRequest('DeleteChain', {
             chainId: chainId,

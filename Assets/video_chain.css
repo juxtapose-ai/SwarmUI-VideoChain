@@ -151,26 +151,6 @@
     font-size: 14px;
 }
 
-/* Status display */
-.video-chain-status {
-    background-color: var(--accent-color, #4a90d9);
-    color: #fff;
-    padding: 10px 15px;
-    border-radius: 4px;
-    margin-bottom: 15px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-
-.video-chain-status-text {
-    font-weight: 500;
-}
-
-.video-chain-status-count {
-    font-family: monospace;
-    font-size: 14px;
-}
 
 .video-chain-no-candidates,
 .video-chain-no-chains {
@@ -478,9 +458,6 @@
     animation: pulse 1.5s ease-in-out infinite;
 }
 
-.video-chain-grid-status.status-queued {
-    color: var(--text-muted, #888);
-}
 
 .video-chain-grid-status.status-new {
     color: var(--text-muted, #666);
@@ -513,18 +490,6 @@
     background-color: var(--error-color, #f44336) !important;
 }
 
-/* Pagination */
-.video-chain-pagination {
-    display: flex;
-    justify-content: center;
-    gap: 5px;
-    margin-bottom: 15px;
-}
-
-.video-chain-pagination button {
-    padding: 4px 10px !important;
-    font-size: 12px !important;
-}
 
 /* Menu button styling */
 .video-chain-menu-button {
@@ -533,42 +498,6 @@
     padding-top: 10px !important;
 }
 
-/* Generating indicator (shown near generate button) */
-.video-chain-generating-indicator {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 8px 12px;
-    margin-top: 10px;
-    background-color: var(--accent-color, #4a90d9);
-    color: #fff;
-    border-radius: 4px;
-    font-size: 13px;
-}
-
-.video-chain-generating-text {
-    flex: 1;
-}
-
-.video-chain-generating-indicator button {
-    padding: 4px 10px !important;
-    font-size: 12px !important;
-    background-color: rgba(255,255,255,0.2) !important;
-}
-
-.video-chain-generating-indicator button:hover {
-    background-color: rgba(255,255,255,0.3) !important;
-}
-
-.video-chain-generating-indicator .video-chain-done-btn {
-    background-color: #fff !important;
-    color: var(--accent-color, #4a90d9) !important;
-    font-weight: 600 !important;
-}
-
-.video-chain-generating-indicator .video-chain-done-btn:hover {
-    background-color: #f0f0f0 !important;
-}
 
 /* Pending generation banner - inline below generate button */
 .video-chain-pending-inline {
@@ -645,65 +574,6 @@
     margin-bottom: 5px;
 }
 
-/* Small generating indicator (under generate button) */
-.video-chain-small-indicator {
-    color: var(--text-color, #aaa);
-    padding: 2px 0;
-    font-size: 11px;
-    text-align: center;
-}
-
-/* Queue indicator */
-.video-chain-queue-indicator {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 6px 12px;
-    margin-top: 5px;
-    background-color: var(--background-light, #2a2a3e);
-    border: 1px solid var(--border-color, #444);
-    border-radius: 4px;
-    font-size: 12px;
-    color: var(--text-muted, #aaa);
-}
-
-.video-chain-queue-indicator button {
-    padding: 2px 8px !important;
-    font-size: 11px !important;
-}
-
-/* Queue dialog list */
-.video-chain-queue-list {
-    max-height: 300px;
-    overflow-y: auto;
-    margin-bottom: 15px;
-}
-
-.video-chain-queue-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 10px 12px;
-    background-color: var(--card-background, #2a2a3e);
-    border-radius: 4px;
-    margin-bottom: 8px;
-}
-
-.video-chain-queue-item span {
-    color: var(--text-color, #fff);
-}
-
-.video-chain-queue-item button {
-    padding: 4px 10px !important;
-    font-size: 12px !important;
-}
-
-/* Start next chain button in editor */
-.video-chain-next-queued-btn {
-    background-color: var(--accent-color, #4a90d9) !important;
-    margin-left: auto;
-}
 
 /* Responsive adjustments */
 @media (max-width: 900px) {
