@@ -27,6 +27,62 @@ class VideoChainManager {
         this.injectMenuOptions();
         this.createSetupDialog();
         this.createEditorModal();
+        this.createStitchedVideosModal();
+        this._patchGenerationButtons();
+        this._patchButtonsForImage();
+    }
+
+    /** Inject "Add to Chain" into SwarmUI's per-image button menus for video files */
+    _patchButtonsForImage() {
+        if (typeof buttonsForImage === 'undefined') {
+            setTimeout(() => this._patchButtonsForImage(), 500);
+            return;
+        }
+        let origFn = window.buttonsForImage;
+        window.buttonsForImage = (fullsrc, src, metadata) => {
+            let buttons = origFn(fullsrc, src, metadata);
+            if (!src.startsWith('data:') && (isVideoExt(fullsrc) || isVideoExt(src))) {
+                let candidatePath = src.startsWith('/') ? src.slice(1) : src;
+                buttons.push({
+                    label: 'Add to Chain',
+                    title: 'Add this video as a candidate to a video chain segment.',
+                    onclick: () => {
+                        this.startAddToChain(candidatePath);
+                    }
+                });
+            }
+            return buttons;
+        };
+    }
+
+    /** Intercept generate/interrupt buttons when chain state is active */
+    _patchGenerationButtons() {
+        document.body.addEventListener('click', (e) => {
+            // Interrupt button: confirm if a chain is currently generating
+            if (e.target.closest('#alt_interrupt_button, #interrupt_button')) {
+                if (this.activePolls.size == 0) return;
+                e.stopPropagation();
+                e.preventDefault();
+                let count = this.activePolls.size;
+                if (confirm(`${count} chain generation${count > 1 ? 's are' : ' is'} in progress. Cancel all generations?`)) {
+                    mainGenHandler.doInterrupt();
+                }
+                return;
+            }
+            // Generate button: ask what to do when a chain continuation is pending
+            if (e.target.closest('#alt_generate_button, #generate_button')) {
+                if (!this.continuingChainId) return;
+                e.stopPropagation();
+                e.preventDefault();
+                let segmentNum = (this.continuingSegmentIndex || 0) + 1;
+                let chainName = this.activeChain?.name || 'chain';
+                if (confirm(`Ready to continue "${chainName}" (segment ${segmentNum}).\n\nOK = Generate chain segment\nCancel = Regular generate`)) {
+                    this.generateNextSegment();
+                } else {
+                    mainGenHandler.doGenerate();
+                }
+            }
+        }, true);
     }
 
     /** Inject menu options into the generate popover */
@@ -110,7 +166,16 @@ class VideoChainManager {
                         Segment: <span id="video_chain_editor_segment">-</span>
                     </span>
                 </div>
-                <div class="video-chain-candidates-grid" id="video_chain_candidates_container">
+                <div class="video-chain-add-banner" id="video_chain_add_banner" style="display:none">
+                    <div class="video-chain-add-banner-inner">
+                        <video class="video-chain-add-thumb" id="video_chain_add_thumb" loop muted playsinline autoplay></video>
+                        <span class="video-chain-add-text">Adding video &mdash; pick a segment below, then use the action buttons</span>
+                    </div>
+                    <button class="basic-button video-chain-add-cancel-btn" onclick="videoChainManager.cancelAddToChain()">&times; Cancel</button>
+                </div>
+                <div class="video-chain-candidates-wrapper">
+                    <div class="video-chain-candidates-grid" id="video_chain_candidates_container">
+                    </div>
                 </div>
                 <div class="video-chain-timeline" id="video_chain_timeline">
                     <h3>Timeline</h3>
@@ -119,13 +184,37 @@ class VideoChainManager {
                 </div>
                 <div class="video-chain-editor-buttons">
                     <button class="basic-button video-chain-continue-btn" id="video_chain_continue_btn" onclick="videoChainManager.continueChain()">Continue Chain</button>
-                    <button class="basic-button video-chain-stitch-btn" onclick="videoChainManager.stitchChain()">Stitch All</button>
-                    <button class="basic-button video-chain-cleanup-btn" onclick="videoChainManager.showCleanupPrompt()">Delete Non-Selected</button>
+                    <button class="basic-button video-chain-stitch-btn" id="video_chain_stitch_btn" onclick="videoChainManager.stitchChain()">Stitch All</button>
+                    <button class="basic-button video-chain-cleanup-btn" id="video_chain_cleanup_btn" onclick="videoChainManager.showCleanupPrompt()">Delete Non-Selected</button>
+                    <button class="basic-button video-chain-stitched-btn" id="video_chain_stitched_btn" onclick="videoChainManager.openStitchedVideos()" style="display:none">Stitched Videos</button>
+                    <button class="basic-button video-chain-add-segment-btn" id="video_chain_add_segment_btn" onclick="videoChainManager.addVideoToCurrentSegment()" style="display:none">Add to This Segment</button>
+                    <button class="basic-button video-chain-add-end-btn" id="video_chain_add_end_btn" onclick="videoChainManager.addVideoToNewEndSegment()" style="display:none">Add as New End Segment</button>
                     <button class="basic-button" onclick="videoChainManager.closeEditorModal()">Close</button>
                 </div>
             </div>
         `;
         document.body.appendChild(this.editorModal);
+    }
+
+    /** Create the stitched videos modal */
+    createStitchedVideosModal() {
+        this.stitchedModal = document.createElement('div');
+        this.stitchedModal.id = 'video_chain_stitched_modal';
+        this.stitchedModal.className = 'video-chain-modal';
+        this.stitchedModal.innerHTML = `
+            <div class="video-chain-modal-content video-chain-stitched-content">
+                <button class="video-chain-close-x" onclick="videoChainManager.closeStitchedModal()">&times;</button>
+                <div class="video-chain-editor-header">
+                    <h2>Stitched Videos</h2>
+                    <span class="video-chain-info">Chain: <span id="video_chain_stitched_chain_name">-</span></span>
+                </div>
+                <div class="video-chain-stitched-grid" id="video_chain_stitched_grid"></div>
+                <div class="video-chain-buttons">
+                    <button class="basic-button" onclick="videoChainManager.closeStitchedModal()">Back to Editor</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(this.stitchedModal);
     }
 
     /** Open the setup dialog */
@@ -277,8 +366,83 @@ class VideoChainManager {
 
         this.renderCandidates();
         this.renderTimeline();
+        this._updateStitchedBtn();
+        this._updateAddModeUI();
 
         this.editorModal.style.display = 'flex';
+    }
+
+    /** Show or hide the Stitched Videos button based on chain data */
+    _updateStitchedBtn() {
+        let btn = document.getElementById('video_chain_stitched_btn');
+        if (!btn) return;
+        let hasStitched = this.activeChain?.stitched_outputs?.length > 0;
+        btn.style.display = hasStitched ? '' : 'none';
+    }
+
+    /** Open the stitched videos modal */
+    openStitchedVideos() {
+        if (!this.activeChain) return;
+        document.getElementById('video_chain_stitched_chain_name').textContent = this.activeChain.name;
+        this.renderStitchedVideos();
+        this.editorModal.style.display = 'none';
+        this.stitchedModal.style.display = 'flex';
+    }
+
+    closeStitchedModal() {
+        this.stitchedModal.style.display = 'none';
+        this.editorModal.style.display = 'flex';
+    }
+
+    /** Render stitched video cards */
+    renderStitchedVideos() {
+        let grid = document.getElementById('video_chain_stitched_grid');
+        grid.innerHTML = '';
+
+        let outputs = this.activeChain?.stitched_outputs || [];
+        if (outputs.length == 0) {
+            grid.innerHTML = '<p class="video-chain-no-candidates">No stitched videos yet.</p>';
+            return;
+        }
+
+        for (let i = 0; i < outputs.length; i++) {
+            let entry = outputs[i];
+            let url = entry.url || entry;
+            let videoSrc = url.startsWith('/') ? url : `/${url}`;
+
+            let dateLabel = '';
+            if (entry.created) {
+                let d = new Date(entry.created);
+                dateLabel = d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            }
+
+            let card = document.createElement('div');
+            card.className = 'video-chain-stitched-card';
+            card.innerHTML = `
+                <div class="video-chain-candidate-preview">
+                    <video loop muted playsinline>
+                        <source src="${videoSrc}" type="video/mp4">
+                    </video>
+                </div>
+                <div class="video-chain-candidate-controls">
+                    <span class="video-chain-candidate-label">Stitched ${i + 1}${dateLabel ? ' &mdash; ' + dateLabel : ''}</span>
+                    <a class="basic-button video-chain-download-btn" href="${videoSrc}" download>Download</a>
+                </div>
+            `;
+
+            let video = card.querySelector('video');
+            if (video) {
+                card.addEventListener('mouseenter', () => video.play());
+                card.addEventListener('mouseleave', () => { video.pause(); video.currentTime = 0; });
+                card.querySelector('.video-chain-candidate-preview').addEventListener('click', () => {
+                    if (typeof imageFullView !== 'undefined') {
+                        imageFullView.showImage(videoSrc, '{}', `stitched_${i}`);
+                    }
+                });
+            }
+
+            grid.appendChild(card);
+        }
     }
 
     closeEditorModal(returnToList = true) {
@@ -530,6 +694,92 @@ class VideoChainManager {
         this.openEditorModal();
     }
 
+    /** Begin "add to chain" mode with the given stored video URL */
+    startAddToChain(videoSrc) {
+        this.pendingAddVideoSrc = videoSrc;
+        this.openChainList();
+    }
+
+    /** Cancel "add to chain" mode */
+    cancelAddToChain() {
+        this.pendingAddVideoSrc = null;
+        this._updateAddModeUI();
+        if (this.editorModal && this.editorModal.style.display != 'none') {
+            this.closeEditorModal(false);
+        }
+    }
+
+    /** Show/hide add-mode banner and action buttons based on pendingAddVideoSrc */
+    _updateAddModeUI() {
+        let isAddMode = !!this.pendingAddVideoSrc;
+        let banner = document.getElementById('video_chain_add_banner');
+        if (banner) {
+            if (isAddMode) {
+                let videoDisplaySrc = this.pendingAddVideoSrc.startsWith('/') ? this.pendingAddVideoSrc : `/${this.pendingAddVideoSrc}`;
+                let thumb = document.getElementById('video_chain_add_thumb');
+                if (thumb) {
+                    thumb.src = videoDisplaySrc;
+                    thumb.load();
+                }
+            }
+            banner.style.display = isAddMode ? '' : 'none';
+        }
+        for (let id of ['video_chain_continue_btn', 'video_chain_stitch_btn', 'video_chain_cleanup_btn']) {
+            let btn = document.getElementById(id);
+            if (btn) btn.style.display = isAddMode ? 'none' : '';
+        }
+        if (!isAddMode) {
+            this._updateStitchedBtn();
+        } else {
+            let stitchedBtn = document.getElementById('video_chain_stitched_btn');
+            if (stitchedBtn) stitchedBtn.style.display = 'none';
+        }
+        let addSegBtn = document.getElementById('video_chain_add_segment_btn');
+        let addEndBtn = document.getElementById('video_chain_add_end_btn');
+        if (addSegBtn) addSegBtn.style.display = isAddMode ? '' : 'none';
+        if (addEndBtn) addEndBtn.style.display = isAddMode ? '' : 'none';
+    }
+
+    /** Add the pending video to the currently-viewed segment */
+    addVideoToCurrentSegment() {
+        if (!this.pendingAddVideoSrc || !this.activeChain) return;
+        genericRequest('AddChainCandidates', {
+            chainId: this.activeChain.chain_id,
+            segmentIndex: this.currentSegmentIndex,
+            candidates: [this.pendingAddVideoSrc]
+        }, (data) => {
+            if (data.error) { showError(data.error); return; }
+            this.activeChain = data.chain;
+            this.pendingAddVideoSrc = null;
+            this._updateAddModeUI();
+            this.renderCandidates();
+            this.renderTimeline();
+            doNoticePopover(`Video added to segment ${this.currentSegmentIndex + 1}!`, 'notice-pop-green');
+        });
+    }
+
+    /** Add the pending video as a brand new segment at the end of the chain */
+    addVideoToNewEndSegment() {
+        if (!this.pendingAddVideoSrc || !this.activeChain) return;
+        let newSegIndex = this.activeChain.segments?.length || 0;
+        genericRequest('AddChainCandidates', {
+            chainId: this.activeChain.chain_id,
+            segmentIndex: newSegIndex,
+            candidates: [this.pendingAddVideoSrc]
+        }, (data) => {
+            if (data.error) { showError(data.error); return; }
+            this.activeChain = data.chain;
+            this.currentSegmentIndex = newSegIndex;
+            this.pendingAddVideoSrc = null;
+            this._updateAddModeUI();
+            this.renderCandidates();
+            this.renderTimeline();
+            document.getElementById('video_chain_editor_segment').textContent =
+                `${newSegIndex + 1}/${data.chain.segments.length}`;
+            doNoticePopover('Video added as new end segment!', 'notice-pop-green');
+        });
+    }
+
     /** Get last frame image path from video path */
     getLastFramePath(videoPath) {
         let lastDot = videoPath.lastIndexOf('.');
@@ -645,9 +895,16 @@ class VideoChainManager {
                 return;
             }
 
-            doNoticePopover(`"${this.activeChain.name}" stitched!`, 'notice-pop-green');
+            if (data.chain) {
+                this.activeChain = data.chain;
+            }
 
-            if (data.output) {
+            doNoticePopover(`"${this.activeChain.name}" stitched! Click "Stitched Videos" in the editor to view.`, 'notice-pop-green');
+
+            if (data.stitched_url) {
+                let videoSrc = data.stitched_url.startsWith('/') ? data.stitched_url : `/${data.stitched_url}`;
+                setCurrentImage(videoSrc, '{}', 'chain_final');
+            } else if (data.output) {
                 let videoSrc = `${getImageOutPrefix()}/${data.output}`;
                 setCurrentImage(videoSrc, '{}', 'chain_final');
             }
@@ -737,13 +994,28 @@ class VideoChainManager {
                     `;
                 }).join('');
 
+            let addModeBannerHtml = '';
+            if (this.pendingAddVideoSrc) {
+                let videoDisplaySrc = this.pendingAddVideoSrc.startsWith('/') ? this.pendingAddVideoSrc : `/${this.pendingAddVideoSrc}`;
+                addModeBannerHtml = `
+                    <div class="video-chain-add-banner">
+                        <div class="video-chain-add-banner-inner">
+                            <video class="video-chain-add-thumb" loop muted playsinline autoplay src="${videoDisplaySrc}"></video>
+                            <span class="video-chain-add-text">Select a chain to add this video to</span>
+                        </div>
+                        <button class="basic-button video-chain-add-cancel-btn" onclick="videoChainManager.cancelAddToChain(); document.getElementById('video_chain_list_dialog')?.remove();">&times; Cancel</button>
+                    </div>`;
+            }
+            let listTitle = this.pendingAddVideoSrc ? 'Add Video to Chain' : 'Your Video Chains';
+
             let listDialog = document.createElement('div');
             listDialog.className = 'video-chain-modal';
             listDialog.id = 'video_chain_list_dialog';
             listDialog.innerHTML = `
                 <div class="video-chain-modal-content video-chain-list-modal">
                     <button class="video-chain-close-x" onclick="document.getElementById('video_chain_list_dialog').remove()">&times;</button>
-                    <h2>Your Video Chains</h2>
+                    ${addModeBannerHtml}
+                    <h2>${listTitle}</h2>
                     <div class="video-chain-grid">${gridHtml}</div>
                     <div class="video-chain-buttons">
                         <button class="basic-button" onclick="document.getElementById('video_chain_list_dialog').remove()">Close</button>

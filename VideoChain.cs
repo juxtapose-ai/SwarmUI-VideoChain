@@ -748,7 +748,8 @@ public class VideoChain : Extension
         string userVideoDir = GetUserVideoChainDir(session.User.UserID);
         Directory.CreateDirectory(userVideoDir);
         string concatFilePath = Path.Combine(Path.GetTempPath(), $"{chainId}_concat.txt");
-        string outputPath = Path.Combine(userVideoDir, $"{Utilities.StrictFilenameClean(chainName)}_final.mp4");
+        string stitchTimestamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
+        string outputPath = Path.Combine(userVideoDir, $"{Utilities.StrictFilenameClean(chainName)}_stitched_{stitchTimestamp}.mp4");
 
         // Write concat file with proper escaping for FFmpeg
         File.WriteAllLines(concatFilePath, selectedVideos.Select(v => $"file '{v.Replace("\\", "/").Replace("'", "'\\''")}'"));
@@ -785,12 +786,22 @@ public class VideoChain : Extension
             chain["final_output"] = relativePath;
             // Store the full prompt chain (parsed prompts from all selected segments)
             chain["prompt_chain"] = JArray.FromObject(promptChain);
+            // Append to stitched_outputs array (View/... URL format, same as candidates)
+            string stitchedStoredUrl = StoredPathFromFilePath(outputPath);
+            JArray stitchedOutputs = chain["stitched_outputs"] as JArray ?? new JArray();
+            stitchedOutputs.Add(new JObject()
+            {
+                ["url"] = stitchedStoredUrl,
+                ["created"] = DateTime.UtcNow.ToString("o")
+            });
+            chain["stitched_outputs"] = stitchedOutputs;
             SaveChain(session.User.UserID, chainId, chain);
 
             return new JObject()
             {
                 ["success"] = true,
                 ["output"] = chain["final_output"],
+                ["stitched_url"] = stitchedStoredUrl,
                 ["chain"] = chain
             };
         }
