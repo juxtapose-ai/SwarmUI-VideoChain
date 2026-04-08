@@ -64,7 +64,7 @@ class VideoChainManager {
                 e.stopPropagation();
                 e.preventDefault();
                 let count = this.activePolls.size;
-                if (confirm(`${count} chain generation${count > 1 ? 's are' : ' is'} in progress. Cancel all generations?`)) {
+                if (confirm(`${count} chain generation${count > 1 ? 's are' : ' is'} in progress.\n\nOK = abort generation\nCancel = continue generating`)) {
                     mainGenHandler.doInterrupt();
                 }
                 return;
