@@ -8,7 +8,8 @@ A SwarmUI extension for easily creating chains of videos to make longer outputs.
 - **Side-by-Side Comparison**: Visual grid layout for comparing candidate videos (hover to play)
 - **Selection & Chaining**: Select the best candidate and use its last frame as init image for the next segment
 - **Timeline View**: Visual timeline showing all segments and their selection status
-- **FFmpeg Stitching**: One-click concatenation of all selected segments into a final video
+- **FFmpeg Stitching**: One-click concatenation of all selected segments into a final video; full stitch history kept per chain
+- **Add to Chain**: Right-click any video in SwarmUI's history to add it as a candidate to an existing chain segment or as a new end segment
 - **Cleanup Tools**: Delete non-selected candidates to save disk space
 
 ## Installation
@@ -28,7 +29,7 @@ A SwarmUI extension for easily creating chains of videos to make longer outputs.
 3. Enter a name for your chain (or use the auto-generated timestamp name)
 4. Click **"Start Chain"**
 
-All parameters, including the number of candidates generated per segment are controlled by the parameters in the main UI.
+All parameters, including the number of candidates generated per segment, are controlled by the parameters in the main UI.
 
 ### Working with the Chain Editor
 
@@ -46,14 +47,33 @@ After generating candidates, the Chain Editor opens:
 - **Actions**:
   - **Continue Chain**: Sets last frame as init image, ready for next segment
   - **Stitch All**: Combine all selected segments into one video
+  - **Stitched Videos**: View all past stitches for this chain
   - **Delete Non-Selected**: Remove non-selected candidates from current segment
+
+### Adding Existing Videos to a Chain
+
+You can add any video from SwarmUI's history to a chain without regenerating it:
+
+1. Right-click a video in SwarmUI's image/video history
+2. Select **"Add to Chain"**
+3. Pick the chain from the list
+4. Navigate to the segment you want, then choose:
+   - **Add to Current Segment**: Adds the video as a candidate for the selected segment
+   - **Add as New End Segment**: Appends it as a new segment at the end of the chain
+
+### Continuing a Chain
+
+When you click **Continue Chain**, the last frame of the selected video is set as the init image and a banner appears at the top of the UI. You can then adjust any parameters before generating the next segment.
+
+- Pressing **Generate** while a continuation is pending shows a confirmation: OK continues the chain, Cancel does a normal single generation.
+- Pressing the **Interrupt** button while a chain is generating asks for confirmation before aborting.
 
 ### Managing Chains
 
 Access **"Manage Video Chains"** from the Generate dropdown to see all your chains.
 
 Status indicators:
-- **Stitched** (green): Chain has been stitched into final video
+- **Stitched** (green): Chain has been stitched into a final video
 - **Generating...** (blue, pulsing): Currently generating candidates
 - **Ready to Continue** (green): Last segment has a selection, ready to continue
 - **Waiting for Selection** (orange): Has candidates but none selected
@@ -64,7 +84,7 @@ Status indicators:
 Chain data is stored per-user at `Output/{userId}/VideoChains/` (or `Output/VideoChains/` if user paths are disabled) as JSON files containing:
 - Chain metadata (name, creation date, status)
 - Segment information (candidates, selection, prompt)
-- Final output path (after stitching)
+- Stitched output history
 
 ## Requirements
 
@@ -82,6 +102,7 @@ Chain data is stored per-user at `Output/{userId}/VideoChains/` (or `Output/Vide
 | `CreateVideoChain` | Create a new video chain |
 | `GetVideoChain` | Get chain data by ID |
 | `ListVideoChains` | List all chains for current user |
+| `PollChainProgress` | Poll candidate counts for multiple chains in one request |
 | `AddChainCandidates` | Add candidates to a segment |
 | `UpdateChainSegment` | Select a candidate for a segment |
 | `DeleteChainCandidates` | Remove non-selected candidates |
@@ -105,7 +126,9 @@ Both are enabled by default for all users.
 
 3. **Disk Space**: Use "Delete Non-Selected" regularly to clean up unused candidates.
 
-4. **Multiple Chains**: You can queue multiple chains simultaneously - each captures all parameters at queue time.
+4. **Add Existing Videos**: Use "Add to Chain" from the video history to incorporate previously generated clips without regenerating.
+
+5. **Multiple Chains**: You can run multiple chains simultaneously — each captures all parameters at queue time.
 
 ## Troubleshooting
 
