@@ -15,6 +15,13 @@ class VideoChainManager {
         this.activePolls = new Map();
         this.managerInterval = null;
 
+        // Keyframe-save pending state
+        this.pendingSaveKeyframeVideoSrc = null;
+
+        // End frame staged for the next generation
+        this.pendingEndFramePath = null;
+        this.pendingEndFrameKeyframeId = null;
+
         // UI elements
         this.setupDialog = null;
         this.editorModal = null;
@@ -41,15 +48,32 @@ class VideoChainManager {
         let origFn = window.buttonsForImage;
         window.buttonsForImage = (fullsrc, src, metadata) => {
             let buttons = origFn(fullsrc, src, metadata);
-            if (!src.startsWith('data:') && (isVideoExt(fullsrc) || isVideoExt(src))) {
+            if (!src.startsWith('data:')) {
                 let candidatePath = src.startsWith('/') ? src.slice(1) : src;
-                buttons.push({
-                    label: 'Add to Chain',
-                    title: 'Add this video as a candidate to a video chain segment.',
-                    onclick: () => {
-                        this.startAddToChain(candidatePath);
-                    }
-                });
+                if (isVideoExt(fullsrc) || isVideoExt(src)) {
+                    buttons.push({
+                        label: 'Add to Chain',
+                        title: 'Add this video as a candidate to a video chain segment.',
+                        onclick: () => {
+                            this.startAddToChain(candidatePath);
+                        }
+                    });
+                    buttons.push({
+                        label: 'Save as Keyframe',
+                        title: 'Save this video\'s last frame as a keyframe in a chain.',
+                        onclick: () => {
+                            this.startSaveAsKeyframe(candidatePath);
+                        }
+                    });
+                } else {
+                    buttons.push({
+                        label: 'Save as Keyframe',
+                        title: 'Save this image as a keyframe in a chain.',
+                        onclick: () => {
+                            this.startSaveImageAsKeyframe(candidatePath);
+                        }
+                    });
+                }
             }
             return buttons;
         };
@@ -173,8 +197,17 @@ class VideoChainManager {
                     </div>
                     <button class="basic-button video-chain-add-cancel-btn" onclick="videoChainManager.cancelAddToChain()">&times; Cancel</button>
                 </div>
-                <div class="video-chain-candidates-wrapper">
-                    <div class="video-chain-candidates-grid" id="video_chain_candidates_container">
+                <div class="video-chain-main-area">
+                    <div class="video-chain-candidates-wrapper">
+                        <div class="video-chain-candidates-grid" id="video_chain_candidates_container">
+                        </div>
+                    </div>
+                    <div class="video-chain-keyframes" id="video_chain_keyframes">
+                        <div class="video-chain-keyframes-header">
+                            <h3>Keyframes</h3>
+                            <button class="basic-button video-chain-keyframe-upload-btn" onclick="videoChainManager.uploadKeyframe()">+ Upload</button>
+                        </div>
+                        <div class="video-chain-keyframes-strip" id="video_chain_keyframes_strip"></div>
                     </div>
                 </div>
                 <div class="video-chain-timeline" id="video_chain_timeline">
@@ -255,13 +288,17 @@ class VideoChainManager {
     }
 
     /** Generate candidates for a chain segment with metadata injection */
-    generateForChain(chainId, segmentIndex, expectedCount, chainName) {
+    generateForChain(chainId, segmentIndex, expectedCount, chainName, endFrameKeyframeId = null, endFramePath = null) {
         this.ensureSaveLastFrameEnabled();
 
         mainGenHandler.doGenerate({}, {}, (actualInput) => {
             actualInput.extra_metadata = actualInput.extra_metadata || {};
             actualInput.extra_metadata.videochain_id = chainId;
             actualInput.extra_metadata.videochain_segment = segmentIndex;
+            if (endFrameKeyframeId) {
+                actualInput.extra_metadata.videochain_end_frame_keyframe_id = endFrameKeyframeId;
+                actualInput.extra_metadata.videochain_end_frame_path = endFramePath;
+            }
         });
 
         this.startChainPolling(chainId, segmentIndex, expectedCount, chainName || chainId);
@@ -366,6 +403,7 @@ class VideoChainManager {
 
         this.renderCandidates();
         this.renderTimeline();
+        this.renderKeyframes();
         this._updateStitchedBtn();
         this._updateAddModeUI();
 
@@ -465,7 +503,7 @@ class VideoChainManager {
             return;
         }
 
-        // Build header with init image if available
+        // Build header with init image and end frame keyframe if available
         let header = document.createElement('div');
         header.className = 'video-chain-candidates-header';
 
@@ -476,11 +514,23 @@ class VideoChainManager {
             initImageHtml = `<img class="video-chain-init-image" src="${initImageSrc}" alt="Init image" onerror="this.style.display='none'" />`;
         }
 
+        let endKeyframeId = currentSegment.end_frame_keyframe_id;
+        let endKeyframeHtml = '';
+        if (endKeyframeId) {
+            let kf = (this.activeChain?.keyframes || []).find(k => k.keyframe_id == endKeyframeId);
+            if (kf) {
+                let src = kf.image_path.startsWith('/') ? kf.image_path : `/${kf.image_path}`;
+                endKeyframeHtml = `<img class="video-chain-init-image" src="${src}" alt="End frame target" onerror="this.style.display='none'" />`;
+            }
+        }
+
         header.innerHTML = `
             ${initImageHtml}
+            ${endKeyframeHtml}
             <div class="video-chain-header-text">
                 <strong>Selecting for Segment ${this.currentSegmentIndex + 1}</strong>
-                ${initImage ? '<span class="video-chain-init-label">Init image used for this segment</span>' : ''}
+                ${initImage ? '<span class="video-chain-init-label">\u2190 Init image used for this segment</span>' : ''}
+                ${endKeyframeHtml ? '<span class="video-chain-init-label">End frame target used for this segment \u2192</span>' : ''}
             </div>
         `;
         container.appendChild(header);
@@ -593,7 +643,7 @@ class VideoChainManager {
         });
     }
 
-    /** Continue the chain - set last frame as init image and prompt for next segment */
+    /** Continue the chain - set last frame as init image, optionally pick an end frame keyframe */
     continueChain() {
         let segments = this.activeChain.segments || [];
         let currentSegment = segments[this.currentSegmentIndex];
@@ -603,27 +653,84 @@ class VideoChainManager {
             return;
         }
 
-        // Get last frame path (FrameSaver format: video-1.png)
-        let videoPath = currentSegment.selected_video;
-        let lastFramePath = this.getLastFramePath(videoPath);
-
-        // Set as init image
-        this.setInitImageFromPath(lastFramePath, () => {
-            this.closeEditorModal(false);
-
-            let nextSegment = this.currentSegmentIndex + 1;
-            let candidatesPerSegment = parseInt(document.getElementById('input_images')?.value) || 1;
-
-            doNoticePopover(`Ready for segment ${nextSegment + 1}. Adjust parameters then Generate.`, 'notice-pop-blue');
-
-            // Store which chain/segment we're continuing for
-            this.continuingChainId = this.activeChain.chain_id;
-            this.continuingSegmentIndex = nextSegment;
-            this.continuingExpectedCount = candidatesPerSegment;
-
-            // Show a banner so user knows they're in chain mode
-            this.showContinueBanner(nextSegment + 1);
+        this.ensureLastFrame(currentSegment.selected_video, (lastFramePath) => {
+            this.setInitImageFromPath(lastFramePath, () => {
+                let keyframes = this.activeChain?.keyframes || [];
+                if (keyframes.length > 0) {
+                    this.showEndFramePicker();
+                } else {
+                    this._finishContinue(null);
+                }
+            });
         });
+    }
+
+    /** Show an overlay inside the editor letting the user pick an end frame keyframe (or skip). */
+    showEndFramePicker() {
+        let keyframes = this.activeChain?.keyframes || [];
+
+        let overlay = document.createElement('div');
+        overlay.id = 'video_chain_end_frame_picker';
+        overlay.className = 'video-chain-end-frame-picker';
+
+        let thumbsHtml = keyframes.map(kf => {
+            let src = kf.image_path.startsWith('/') ? kf.image_path : `/${kf.image_path}`;
+            return `
+                <div class="video-chain-picker-thumb"
+                     onclick="videoChainManager.selectEndFrame('${kf.keyframe_id}')">
+                    <img src="${src}" onerror="this.style.opacity='0.3'" />
+                </div>
+            `;
+        }).join('');
+
+        overlay.innerHTML = `
+            <div class="video-chain-end-frame-picker-inner">
+                <h3>Set end frame? <span class="video-chain-hint">(optional)</span></h3>
+                <div class="video-chain-picker-thumbs">${thumbsHtml}</div>
+                <div class="video-chain-buttons">
+                    <button class="basic-button" onclick="videoChainManager.selectEndFrame(null)">Skip</button>
+                </div>
+            </div>
+        `;
+
+        let editorContent = this.editorModal.querySelector('.video-chain-modal-content');
+        editorContent.appendChild(overlay);
+    }
+
+    /** Called when the user picks a keyframe (or null to skip) from the end frame picker. */
+    selectEndFrame(keyframeId) {
+        let overlay = document.getElementById('video_chain_end_frame_picker');
+        if (overlay) overlay.remove();
+        this._finishContinue(keyframeId);
+    }
+
+    /** Complete the continue flow — sets end frame if chosen, stores state, shows continue banner. */
+    _finishContinue(endFrameKeyframeId) {
+        let endFramePath = null;
+        if (endFrameKeyframeId) {
+            let kf = (this.activeChain.keyframes || []).find(k => k.keyframe_id == endFrameKeyframeId);
+            if (kf) {
+                endFramePath = kf.image_path;
+                this.setEndFrameFromPath(endFramePath);
+            }
+        }
+
+        this.pendingEndFramePath = endFramePath;
+        this.pendingEndFrameKeyframeId = endFrameKeyframeId;
+
+        this.closeEditorModal(false);
+
+        let nextSegment = this.currentSegmentIndex + 1;
+        let candidatesPerSegment = parseInt(document.getElementById('input_images')?.value) || 1;
+
+        this.continuingChainId = this.activeChain.chain_id;
+        this.continuingSegmentIndex = nextSegment;
+        this.continuingExpectedCount = candidatesPerSegment;
+
+        let endFrameNote = endFramePath ? ' (end frame set)' : '';
+        doNoticePopover(`Ready for segment ${nextSegment + 1}${endFrameNote}. Adjust parameters then Generate.`, 'notice-pop-blue');
+
+        this.showContinueBanner(nextSegment + 1);
     }
 
     /** Show a banner indicating chain continuation mode */
@@ -678,12 +785,21 @@ class VideoChainManager {
         // Read expected count NOW (at generation time) so user can adjust Images after clicking Continue
         let expectedCount = parseInt(document.getElementById('input_images')?.value) || 1;
 
-        this.generateForChain(this.continuingChainId, this.continuingSegmentIndex, expectedCount, this.activeChain?.name);
+        this.generateForChain(
+            this.continuingChainId,
+            this.continuingSegmentIndex,
+            expectedCount,
+            this.activeChain?.name,
+            this.pendingEndFrameKeyframeId || null,
+            this.pendingEndFramePath || null
+        );
 
         // Clear continuation state
         this.continuingChainId = null;
         this.continuingSegmentIndex = null;
         this.continuingExpectedCount = null;
+        this.pendingEndFrameKeyframeId = null;
+        this.pendingEndFramePath = null;
     }
 
     cancelContinue() {
@@ -691,7 +807,185 @@ class VideoChainManager {
         this.continuingChainId = null;
         this.continuingSegmentIndex = null;
         this.continuingExpectedCount = null;
+        this.pendingEndFrameKeyframeId = null;
+        this.pendingEndFramePath = null;
         this.openEditorModal();
+    }
+
+    /** Render the keyframe strip in the editor */
+    renderKeyframes() {
+        let strip = document.getElementById('video_chain_keyframes_strip');
+        if (!strip) return;
+        strip.innerHTML = '';
+        let keyframes = this.activeChain?.keyframes || [];
+        if (keyframes.length == 0) {
+            strip.innerHTML = '<span class="video-chain-keyframe-empty">No keyframes yet</span>';
+            return;
+        }
+        for (let kf of keyframes) {
+            let src = kf.image_path.startsWith('/') ? kf.image_path : `/${kf.image_path}`;
+            let card = document.createElement('div');
+            card.className = 'video-chain-keyframe-card';
+            card.dataset.keyframeId = kf.keyframe_id;
+            card.innerHTML = `
+                <img src="${src}" class="video-chain-keyframe-thumb" onerror="this.style.opacity='0.3'" />
+                <button class="video-chain-keyframe-delete"
+                        onclick="event.stopPropagation(); videoChainManager.removeKeyframe('${kf.keyframe_id}')">&times;</button>
+            `;
+            strip.appendChild(card);
+        }
+    }
+
+    /** Remove a keyframe from the active chain */
+    removeKeyframe(keyframeId) {
+        if (!confirm('Remove this keyframe?')) return;
+        genericRequest('RemoveKeyframe', {
+            chainId: this.activeChain.chain_id,
+            keyframeId: keyframeId
+        }, (data) => {
+            if (data.error) { showError(data.error); return; }
+            this.activeChain = data.chain;
+            this.renderKeyframes();
+            doNoticePopover('Keyframe removed.', 'notice-pop-green');
+        });
+    }
+
+    /** Upload an image file as a keyframe for the active chain */
+    uploadKeyframe() {
+        if (!this.activeChain) { showError('No active chain'); return; }
+        let input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/*';
+        input.onchange = (e) => {
+            let file = e.target.files[0];
+            if (!file) return;
+            let reader = new FileReader();
+            reader.onload = (ev) => {
+                genericRequest('AddKeyframe', {
+                    chainId: this.activeChain.chain_id,
+                    imageData: ev.target.result
+                }, (data) => {
+                    if (data.error) { showError(data.error); return; }
+                    this.activeChain = data.chain;
+                    this.renderKeyframes();
+                    doNoticePopover('Image uploaded as keyframe!', 'notice-pop-green');
+                });
+            };
+            reader.readAsDataURL(file);
+        };
+        input.click();
+    }
+
+    /** Begin "save as keyframe" mode for the given video stored URL (uses last frame) */
+    startSaveAsKeyframe(videoSrc) {
+        if (this.activeChain) {
+            this.saveLastFrameAsKeyframe(videoSrc, this.activeChain.chain_id);
+        } else {
+            this.pendingSaveKeyframeVideoSrc = videoSrc;
+            this.pendingSaveKeyframeIsVideo = true;
+            this.openChainList();
+        }
+    }
+
+    /** Begin "save as keyframe" mode for an image stored URL (uses the image directly) */
+    startSaveImageAsKeyframe(imageSrc) {
+        if (this.activeChain) {
+            this._addPathAsKeyframe(imageSrc, this.activeChain.chain_id, 'Image saved as keyframe!');
+        } else {
+            this.pendingSaveKeyframeVideoSrc = imageSrc;
+            this.pendingSaveKeyframeIsVideo = false;
+            this.openChainList();
+        }
+    }
+
+    /** Save the last frame of a video as a keyframe for the given chain */
+    saveLastFrameAsKeyframe(videoSrc, chainId) {
+        this.ensureLastFrame(videoSrc, (lastFramePath) => {
+            this._addPathAsKeyframe(lastFramePath, chainId, 'Last frame saved as keyframe!');
+        });
+    }
+
+    /** Ensure the last frame image exists for a video, extracting via FFmpeg if FrameSaver didn't create it */
+    ensureLastFrame(videoSrc, callback) {
+        let lastFramePath = this.getLastFramePath(videoSrc);
+        let lastFrameUrl = lastFramePath.startsWith('/') ? lastFramePath : `/${lastFramePath}`;
+        fetch(lastFrameUrl, { method: 'HEAD' })
+            .then(r => {
+                if (r.ok) {
+                    callback(lastFramePath);
+                } else {
+                    genericRequest('EnsureLastFrame', { videoPath: videoSrc }, (data) => {
+                        if (data.error) { showError(`Could not get last frame: ${data.error}`); return; }
+                        callback(data.last_frame_path);
+                    });
+                }
+            })
+            .catch(() => {
+                genericRequest('EnsureLastFrame', { videoPath: videoSrc }, (data) => {
+                    if (data.error) { showError(`Could not get last frame: ${data.error}`); return; }
+                    callback(data.last_frame_path);
+                });
+            });
+    }
+
+    /** Send an already-resolved image path to AddKeyframe */
+    _addPathAsKeyframe(imagePath, chainId, successMsg) {
+        genericRequest('AddKeyframe', {
+            chainId: chainId,
+            imagePath: imagePath
+        }, (data) => {
+            if (data.error) { showError(data.error); return; }
+            if (this.activeChain?.chain_id == chainId) {
+                this.activeChain = data.chain;
+                this.renderKeyframes();
+            }
+            this.pendingSaveKeyframeVideoSrc = null;
+            this.pendingSaveKeyframeIsVideo = false;
+            doNoticePopover(successMsg || 'Saved as keyframe!', 'notice-pop-green');
+        });
+    }
+
+    /** Called when user clicks a chain in the list while in keyframe-save mode */
+    _onChainListKeyframeMode(chainId) {
+        let src = this.pendingSaveKeyframeVideoSrc;
+        let isVideo = this.pendingSaveKeyframeIsVideo;
+        document.getElementById('video_chain_list_dialog')?.remove();
+        if (isVideo) {
+            this.saveLastFrameAsKeyframe(src, chainId);
+        } else {
+            this._addPathAsKeyframe(src, chainId, 'Image saved as keyframe!');
+        }
+    }
+
+    /** Set the SwarmUI end frame input from an image stored URL */
+    setEndFrameFromPath(imagePath) {
+        let imageUrl = imagePath.startsWith('/') ? imagePath : `/${imagePath}`;
+
+        fetch(imageUrl)
+            .then(response => {
+                if (!response.ok) throw new Error(`End frame not found: ${imagePath}`);
+                return response.blob();
+            })
+            .then(blob => {
+                let endFrameParam = document.getElementById('input_videoendimage');
+                if (endFrameParam) {
+                    let file = new File([blob], 'end_frame.png', { type: 'image/png' });
+                    let container = new DataTransfer();
+                    container.items.add(file);
+                    endFrameParam.files = container.files;
+                    triggerChangeFor(endFrameParam);
+                    toggleGroupOpen(endFrameParam, true);
+
+                    let toggler = document.getElementById('input_group_content_videoendimage_toggle');
+                    if (toggler) {
+                        toggler.checked = true;
+                        triggerChangeFor(toggler);
+                    }
+                }
+            })
+            .catch(err => {
+                console.error('VideoChain: Failed to load end frame:', err);
+            });
     }
 
     /** Begin "add to chain" mode with the given stored video URL */
@@ -978,8 +1272,12 @@ class VideoChainManager {
                         }
                     }
 
+                    let chainOnclick = this.pendingSaveKeyframeVideoSrc
+                        ? `videoChainManager._onChainListKeyframeMode('${chain.chain_id}');`
+                        : `videoChainManager.loadChain('${chain.chain_id}'); document.getElementById('video_chain_list_dialog').remove();`;
+
                     return `
-                        <div class="video-chain-grid-item" onclick="videoChainManager.loadChain('${chain.chain_id}'); document.getElementById('video_chain_list_dialog').remove();">
+                        <div class="video-chain-grid-item" data-status="${statusClass}" onclick="${chainOnclick}">
                             <div class="video-chain-grid-thumb-container">
                                 ${thumbnailHtml}
                             </div>
@@ -995,7 +1293,20 @@ class VideoChainManager {
                 }).join('');
 
             let addModeBannerHtml = '';
-            if (this.pendingAddVideoSrc) {
+            if (this.pendingSaveKeyframeVideoSrc) {
+                let displayPath = this.pendingSaveKeyframeIsVideo
+                    ? this.getLastFramePath(this.pendingSaveKeyframeVideoSrc)
+                    : this.pendingSaveKeyframeVideoSrc;
+                let frameDisplaySrc = displayPath.startsWith('/') ? displayPath : `/${displayPath}`;
+                addModeBannerHtml = `
+                    <div class="video-chain-add-banner">
+                        <div class="video-chain-add-banner-inner">
+                            <img class="video-chain-add-thumb" src="${frameDisplaySrc}" onerror="this.style.display='none'" />
+                            <span class="video-chain-add-text">Select a chain to save this frame as a keyframe</span>
+                        </div>
+                        <button class="basic-button video-chain-add-cancel-btn" onclick="videoChainManager.pendingSaveKeyframeVideoSrc=null; videoChainManager.closeChainList();">&times; Cancel</button>
+                    </div>`;
+            } else if (this.pendingAddVideoSrc) {
                 let videoDisplaySrc = this.pendingAddVideoSrc.startsWith('/') ? this.pendingAddVideoSrc : `/${this.pendingAddVideoSrc}`;
                 addModeBannerHtml = `
                     <div class="video-chain-add-banner">
@@ -1003,28 +1314,69 @@ class VideoChainManager {
                             <video class="video-chain-add-thumb" loop muted playsinline autoplay src="${videoDisplaySrc}"></video>
                             <span class="video-chain-add-text">Select a chain to add this video to</span>
                         </div>
-                        <button class="basic-button video-chain-add-cancel-btn" onclick="videoChainManager.cancelAddToChain(); document.getElementById('video_chain_list_dialog')?.remove();">&times; Cancel</button>
+                        <button class="basic-button video-chain-add-cancel-btn" onclick="videoChainManager.cancelAddToChain(); videoChainManager.closeChainList();">&times; Cancel</button>
                     </div>`;
             }
-            let listTitle = this.pendingAddVideoSrc ? 'Add Video to Chain' : 'Your Video Chains';
+            let listTitle = this.pendingSaveKeyframeVideoSrc ? 'Save Frame as Keyframe'
+                : (this.pendingAddVideoSrc ? 'Add Video to Chain' : 'Your Video Chains');
 
             let listDialog = document.createElement('div');
             listDialog.className = 'video-chain-modal';
             listDialog.id = 'video_chain_list_dialog';
+            let isNormalMode = !this.pendingSaveKeyframeVideoSrc && !this.pendingAddVideoSrc;
+            let filterBarHtml = '';
+            if (isNormalMode && chains.length > 0) {
+                filterBarHtml = `
+                    <div class="video-chain-filter-bar">
+                        <button class="video-chain-filter-btn active" data-filter="all" onclick="videoChainManager.filterChainList('all', this)">All</button>
+                        <button class="video-chain-filter-btn" data-filter="status-new" onclick="videoChainManager.filterChainList('status-new', this)">New</button>
+                        <button class="video-chain-filter-btn" data-filter="status-waiting" onclick="videoChainManager.filterChainList('status-waiting', this)">Waiting for Selection</button>
+                        <button class="video-chain-filter-btn" data-filter="status-ready" onclick="videoChainManager.filterChainList('status-ready', this)">Ready to Continue</button>
+                        <button class="video-chain-filter-btn" data-filter="status-generating" onclick="videoChainManager.filterChainList('status-generating', this)">Generating</button>
+                        <button class="video-chain-filter-btn" data-filter="status-stitched" onclick="videoChainManager.filterChainList('status-stitched', this)">Stitched</button>
+                    </div>`;
+            }
+
             listDialog.innerHTML = `
                 <div class="video-chain-modal-content video-chain-list-modal">
-                    <button class="video-chain-close-x" onclick="document.getElementById('video_chain_list_dialog').remove()">&times;</button>
+                    <button class="video-chain-close-x" onclick="videoChainManager.closeChainList()">&times;</button>
                     ${addModeBannerHtml}
                     <h2>${listTitle}</h2>
+                    ${filterBarHtml}
                     <div class="video-chain-grid">${gridHtml}</div>
                     <div class="video-chain-buttons">
-                        <button class="basic-button" onclick="document.getElementById('video_chain_list_dialog').remove()">Close</button>
+                        <button class="basic-button" onclick="videoChainManager.closeChainList()">Close</button>
                     </div>
                 </div>
             `;
             listDialog.style.display = 'flex';
             document.body.appendChild(listDialog);
+
+            // Restore active filter if one was set before the list was rebuilt
+            if (this._chainListFilter && this._chainListFilter != 'all') {
+                let btn = listDialog.querySelector(`.video-chain-filter-btn[data-filter="${this._chainListFilter}"]`);
+                if (btn) this.filterChainList(this._chainListFilter, btn);
+            }
         });
+    }
+
+    /** Dismiss the chain list and clear the active chain (user has backed out entirely) */
+    closeChainList() {
+        document.getElementById('video_chain_list_dialog')?.remove();
+        this.activeChain = null;
+    }
+
+    /** Filter the chain list grid by status class, or 'all' to show everything */
+    filterChainList(statusClass, btn) {
+        this._chainListFilter = statusClass;
+        let items = document.querySelectorAll('#video_chain_list_dialog .video-chain-grid-item');
+        for (let item of items) {
+            item.style.display = (statusClass == 'all' || item.dataset.status == statusClass) ? '' : 'none';
+        }
+        let btns = document.querySelectorAll('#video_chain_list_dialog .video-chain-filter-btn');
+        for (let b of btns) {
+            b.classList.toggle('active', b == btn);
+        }
     }
 
     deleteChainPrompt(chainId) {

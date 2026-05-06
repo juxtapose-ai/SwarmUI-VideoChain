@@ -75,6 +75,9 @@ public class VideoChain : Extension
         API.RegisterAPICall(DeleteChain, true, PermManageVideoChains);
         API.RegisterAPICall(AddChainCandidates, true, PermGenerateVideoChains);
         API.RegisterAPICall(PollChainProgress, false, PermGenerateVideoChains);
+        API.RegisterAPICall(AddKeyframe, true, PermGenerateVideoChains);
+        API.RegisterAPICall(RemoveKeyframe, true, PermManageVideoChains);
+        API.RegisterAPICall(EnsureLastFrame, false, PermGenerateVideoChains);
 
         StartOutputWatcher();
     }
@@ -169,11 +172,18 @@ public class VideoChain : Extension
                         ["selected_video"] = null,
                         ["candidates"] = new JArray(),
                         ["init_image"] = null,
-                        ["prompt"] = null
+                        ["prompt"] = null,
+                        ["end_frame_keyframe_id"] = null
                     });
                 }
                 JObject segment = (JObject)segments[segmentIndex];
                 ((JArray)segment["candidates"]).Add(storedPath);
+
+                string endFrameKfId = extraData["videochain_end_frame_keyframe_id"]?.ToString();
+                if (!string.IsNullOrEmpty(endFrameKfId) && string.IsNullOrEmpty(segment["end_frame_keyframe_id"]?.ToString()))
+                {
+                    segment["end_frame_keyframe_id"] = endFrameKfId;
+                }
 
                 if (string.IsNullOrEmpty(segment["prompt"]?.ToString()))
                 {
@@ -253,7 +263,8 @@ public class VideoChain : Extension
             ["status"] = "in_progress",
             ["candidates_per_segment"] = candidatesPerSegment,
             ["user_id"] = session.User.UserID,
-            ["segments"] = new JArray()
+            ["segments"] = new JArray(),
+            ["keyframes"] = new JArray()
         };
 
         SaveChain(session.User.UserID, chainId, chain);
@@ -381,13 +392,20 @@ public class VideoChain : Extension
                             ["selected_video"] = null,
                             ["candidates"] = new JArray(),
                             ["init_image"] = null,
-                            ["prompt"] = null
+                            ["prompt"] = null,
+                            ["end_frame_keyframe_id"] = null
                         });
                     }
 
                     JObject segment = (JObject)segments[segmentIndex];
                     ((JArray)segment["candidates"]).Add(storedPath);
                     knownCandidates.Add(storedPath);
+
+                    string endFrameKfId = extraData["videochain_end_frame_keyframe_id"]?.ToString();
+                    if (!string.IsNullOrEmpty(endFrameKfId) && string.IsNullOrEmpty(segment["end_frame_keyframe_id"]?.ToString()))
+                    {
+                        segment["end_frame_keyframe_id"] = endFrameKfId;
+                    }
 
                     // Pull prompt from sidecar if not already set
                     if (string.IsNullOrEmpty(segment["prompt"]?.ToString()))
@@ -535,7 +553,8 @@ public class VideoChain : Extension
                     ["selected_video"] = null,
                     ["candidates"] = new JArray(),
                     ["init_image"] = null,
-                    ["prompt"] = null
+                    ["prompt"] = null,
+                    ["end_frame_keyframe_id"] = null
                 });
             }
 
@@ -809,6 +828,131 @@ public class VideoChain : Extension
         {
             Logs.Error($"FFmpeg stitch failed: {ex.Message}");
             return new JObject() { ["error"] = $"FFmpeg failed: {ex.Message}" };
+        }
+    }
+
+    /// <summary>Ensures the last frame image exists for a video, extracting it with FFmpeg if not already saved by FrameSaver.</summary>
+    public async Task<JObject> EnsureLastFrame(Session session, string videoPath)
+    {
+        string videoFullPath = GetFullPathFromStoredPath(videoPath);
+        if (!File.Exists(videoFullPath))
+        {
+            return new JObject() { ["error"] = $"Video file not found: {videoPath}" };
+        }
+
+        string videoExt = Path.GetExtension(videoFullPath);
+        string lastFrameFullPath = videoFullPath[..^videoExt.Length] + "-1.png";
+        string lastFrameStoredPath = videoPath[..videoPath.LastIndexOf('.')] + "-1.png";
+
+        if (File.Exists(lastFrameFullPath))
+        {
+            return new JObject() { ["success"] = true, ["last_frame_path"] = lastFrameStoredPath };
+        }
+
+        string ffmpeg = Utilities.FfmegLocation.Value;
+        if (string.IsNullOrEmpty(ffmpeg))
+        {
+            return new JObject() { ["error"] = "FFmpeg not available for last frame extraction" };
+        }
+
+        // Seek to the last 1 second, reverse it, take the first output frame — guaranteed to be the true last frame
+        string[] args = ["-y", "-sseof", "-1", "-i", videoFullPath, "-vf", "reverse", "-vframes", "1", lastFrameFullPath];
+        try
+        {
+            await Utilities.QuickRunProcess(ffmpeg, args);
+        }
+        catch (Exception ex)
+        {
+            return new JObject() { ["error"] = $"FFmpeg extraction failed: {ex.Message}" };
+        }
+
+        if (!File.Exists(lastFrameFullPath))
+        {
+            return new JObject() { ["error"] = "FFmpeg did not produce a last frame image" };
+        }
+
+        Logs.Debug($"VideoChain: Extracted last frame via FFmpeg for {videoPath}");
+        return new JObject() { ["success"] = true, ["last_frame_path"] = lastFrameStoredPath };
+    }
+
+    /// <summary>Adds a keyframe to a chain's keyframe library. Accepts either a stored image path (imagePath) or base64 data URL (imageData).</summary>
+    public async Task<JObject> AddKeyframe(Session session, string chainId, string imagePath = null, string imageData = null)
+    {
+        lock (GetChainLock(chainId))
+        {
+            JObject chain = LoadChain(session.User.UserID, chainId);
+            if (chain == null) return new JObject() { ["error"] = "Chain not found" };
+
+            if (chain["keyframes"] == null) chain["keyframes"] = new JArray();
+            JArray keyframes = (JArray)chain["keyframes"];
+
+            string keyframeId = $"kf_{DateTime.UtcNow:yyyyMMdd_HHmmss}_{Guid.NewGuid().ToString()[..6]}";
+            string storedImagePath;
+
+            if (!string.IsNullOrEmpty(imagePath))
+            {
+                // imagePath is a stored URL (View/...) pointing to an existing file
+                string fullPath = GetFullPathFromStoredPath(imagePath);
+                if (!File.Exists(fullPath))
+                {
+                    return new JObject() { ["error"] = $"Image file not found: {imagePath}" };
+                }
+                storedImagePath = imagePath;
+            }
+            else if (!string.IsNullOrEmpty(imageData))
+            {
+                // imageData is a base64 data URL — save to per-chain keyframes directory
+                string keyframeDir = Path.Combine(GetUserVideoChainDir(session.User.UserID), Utilities.StrictFilenameClean(chainId), "keyframes");
+                Directory.CreateDirectory(keyframeDir);
+                string fullPath = Path.Combine(keyframeDir, $"{keyframeId}.png");
+
+                string base64 = imageData;
+                int commaIndex = imageData.IndexOf(',');
+                if (commaIndex >= 0) base64 = imageData[(commaIndex + 1)..];
+
+                try
+                {
+                    File.WriteAllBytes(fullPath, Convert.FromBase64String(base64));
+                }
+                catch (Exception ex)
+                {
+                    return new JObject() { ["error"] = $"Failed to save uploaded image: {ex.Message}" };
+                }
+                storedImagePath = StoredPathFromFilePath(fullPath);
+            }
+            else
+            {
+                return new JObject() { ["error"] = "Either imagePath or imageData is required" };
+            }
+
+            keyframes.Add(new JObject()
+            {
+                ["keyframe_id"] = keyframeId,
+                ["image_path"] = storedImagePath
+            });
+
+            SaveChain(session.User.UserID, chainId, chain);
+
+            return new JObject() { ["success"] = true, ["chain"] = chain };
+        }
+    }
+
+    /// <summary>Removes a keyframe from a chain's keyframe library. Does not delete the underlying image file.</summary>
+    public async Task<JObject> RemoveKeyframe(Session session, string chainId, string keyframeId)
+    {
+        lock (GetChainLock(chainId))
+        {
+            JObject chain = LoadChain(session.User.UserID, chainId);
+            if (chain == null) return new JObject() { ["error"] = "Chain not found" };
+
+            JArray keyframes = chain["keyframes"] as JArray ?? new JArray();
+            JToken toRemove = keyframes.FirstOrDefault(kf => kf["keyframe_id"]?.ToString() == keyframeId);
+            if (toRemove != null) keyframes.Remove(toRemove);
+            chain["keyframes"] = keyframes;
+
+            SaveChain(session.User.UserID, chainId, chain);
+
+            return new JObject() { ["success"] = true, ["chain"] = chain };
         }
     }
 
